@@ -76,7 +76,19 @@ hf auth login
 ```
 
 The script downloads `IndexTeam/IndexTTS-2.5`. It does not mix any IndexTTS
-2.0 checkpoint into the model directory.
+2.0 checkpoint into the model directory. It also downloads the external models
+that the official IndexTTS runtime normally resolves on first use:
+
+- `facebook/w2v-bert-2.0` for reference-audio features (only the Transformers
+  config, feature-extractor config, and safetensors weights).
+- `funasr/campplus` for speaker embeddings (only `campplus_cn_common.bin`).
+- `nvidia/bigvgan_v2_22khz_80band_256x` for waveform generation (only the
+  config and generator checkpoint; optimizer and alternate checkpoints are
+  excluded).
+
+These assets are stored under `models/IndexTTS-2.5/` in the directory layouts
+expected by vLLM-Omni. The script checks every required file before starting
+the API, so missing auxiliary models fail early with a specific path.
 
 ## Project-local storage and Modal
 
@@ -84,7 +96,7 @@ Defaults are kept under the copied repository:
 
 ```text
 .venv-indextts25/              Python environment
-models/IndexTTS-2.5/           model bundle
+models/IndexTTS-2.5/           checkpoint plus external runtime models
 runtime/indextts25/cache/      Hugging Face/runtime cache
 runtime/indextts25/speakers/   uploaded named voices
 runtime/indextts25/results/    WAVs, JSON reports, ZIP archives
@@ -96,9 +108,10 @@ the entire project directory onto persistent storage. The environment, model,
 cache, named voices, reports, and logs then persist together. The script always
 uses GPU 0, internal API port 8092, and web port 7860.
 
-The first run installs and downloads everything. Subsequent runs reuse the
-project-local virtual environment and Hugging Face performs an incremental
-model verification/download, so already complete files are retained.
+The first run installs and downloads everything (roughly 8.3 GB of model data
+in total). Subsequent runs reuse the project-local virtual environment and
+Hugging Face performs an incremental model verification/download, so already
+complete files are retained.
 
 ## Web UI coverage
 

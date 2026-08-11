@@ -61,6 +61,18 @@ class FakeHTTP:
 
 
 class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
+    def test_deployment_bundles_all_external_runtime_models(self):
+        experiment_dir = Path(__file__).resolve().parents[1]
+        deployment = (experiment_dir / "deploy_and_webui.sh").read_text(encoding="utf-8")
+        for repo_id, required_asset in (
+            ("facebook/w2v-bert-2.0", "w2v-bert-2.0/model.safetensors"),
+            ("funasr/campplus", "campplus_cn_common.bin"),
+            ("nvidia/bigvgan_v2_22khz_80band_256x", "bigvgan/bigvgan_generator.pt"),
+        ):
+            with self.subTest(repo_id=repo_id):
+                self.assertIn(repo_id, deployment)
+                self.assertIn(required_asset, deployment)
+
     def test_flashinfer_python311_annotation_patch_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "fd_exchange.py"

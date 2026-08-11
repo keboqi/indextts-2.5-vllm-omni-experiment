@@ -14,6 +14,9 @@ WEB_PORT="7860"
 GPU_DEVICE="0"
 VLLM_VERSION="0.27.0"
 MODEL_ID="IndexTeam/IndexTTS-2.5"
+WAV2VEC_ID="facebook/w2v-bert-2.0"
+CAMPPLUS_ID="funasr/campplus"
+BIGVGAN_ID="nvidia/bigvgan_v2_22khz_80band_256x"
 
 mkdir -p "${MODEL_DIR}" "${DATA_DIR}/logs" "${DATA_DIR}/results" \
   "${DATA_DIR}/speakers" "${DATA_DIR}/cache"
@@ -63,15 +66,50 @@ print("vLLM:", vllm.__version__)
 print("GPU:", torch.cuda.get_device_name(0), "capability:", torch.cuda.get_device_capability(0))
 PY
 
-log "Downloading or verifying ${MODEL_ID} in the project model directory"
-HF_ARGS=(download "${MODEL_ID}" --local-dir "${MODEL_DIR}")
-if [[ -n "${HF_TOKEN:-}" ]]; then
-  HF_ARGS+=(--token "${HF_TOKEN}")
-fi
-hf "${HF_ARGS[@]}"
+hf_download() {
+  local repo_id="$1"
+  local destination="$2"
+  shift 2
+  local args=(download "${repo_id}" "$@" --local-dir "${destination}")
+  if [[ -n "${HF_TOKEN:-}" ]]; then
+    args+=(--token "${HF_TOKEN}")
+  fi
+  hf "${args[@]}"
+}
 
-[[ -n "$(find "${MODEL_DIR}" -mindepth 1 -maxdepth 2 -type f -print -quit)" ]] \
-  || fail "The model directory is empty: ${MODEL_DIR}"
+require_model_file() {
+  local relative_path="$1"
+  [[ -s "${MODEL_DIR}/${relative_path}" ]] \
+    || fail "Required model asset is missing or empty: ${MODEL_DIR}/${relative_path}"
+}
+
+log "Downloading or verifying the ${MODEL_ID} checkpoint bundle"
+hf_download "${MODEL_ID}" "${MODEL_DIR}"
+
+# IndexTTS loads these external models on startup, but IndexTeam/IndexTTS-2.5
+# does not bundle them. Keep exact local layouts recognized by vLLM-Omni so
+# worker processes never perform surprise downloads during model warmup.
+log "Downloading or verifying Wav2Vec2-BERT prompt encoder assets"
+hf_download "${WAV2VEC_ID}" "${MODEL_DIR}/w2v-bert-2.0" \
+  config.json model.safetensors preprocessor_config.json
+
+log "Downloading or verifying the CAMPPlus speaker encoder"
+hf_download "${CAMPPLUS_ID}" "${MODEL_DIR}" campplus_cn_common.bin
+
+log "Downloading or verifying the BigVGAN vocoder"
+hf_download "${BIGVGAN_ID}" "${MODEL_DIR}/bigvgan" \
+  config.json bigvgan_generator.pt
+
+for model_file in \
+  config.yaml gpt.pth codec.pth s2mel.pth wav2vec2bert_stats.pt \
+  multilingual_zh_ja_yue_char_del.tiktoken \
+  qwen0.6bemo4-merge/config.json qwen0.6bemo4-merge/model.safetensors \
+  w2v-bert-2.0/config.json w2v-bert-2.0/model.safetensors \
+  w2v-bert-2.0/preprocessor_config.json campplus_cn_common.bin \
+  bigvgan/config.json bigvgan/bigvgan_generator.pt; do
+  require_model_file "${model_file}"
+done
+log "Main checkpoint and all external runtime models are ready"
 
 export CUDA_VISIBLE_DEVICES="${GPU_DEVICE}"
 export HF_HOME="${DATA_DIR}/cache/huggingface"
