@@ -13,6 +13,8 @@ from indextts25_compat.client import OmniClient
 from indextts25_compat.models import SynthesisRequest
 from indextts25_compat.text import allocate_durations, split_text
 
+from indextts25_compat.patch_flashinfer import NEW_ANNOTATION, OLD_ANNOTATION, patch_file
+
 
 def wav_bytes(frames: int = 2205) -> bytes:
     output = io.BytesIO()
@@ -59,6 +61,15 @@ class FakeHTTP:
 
 
 class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
+    def test_flashinfer_python311_annotation_patch_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "fd_exchange.py"
+            target.write_text(f"def f() -> tuple[{OLD_ANNOTATION}]:\n    pass\n", encoding="utf-8")
+            self.assertIn("patched", patch_file(target))
+            self.assertNotIn(OLD_ANNOTATION, target.read_text(encoding="utf-8"))
+            self.assertIn(NEW_ANNOTATION, target.read_text(encoding="utf-8"))
+            self.assertIn("already compatible", patch_file(target))
+
     async def test_named_voice_upload_matches_omni_multipart_contract(self):
         client = object.__new__(OmniClient)
         client._http = FakeHTTP()

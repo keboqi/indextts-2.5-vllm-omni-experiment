@@ -18,6 +18,12 @@ environment, installs vLLM 0.27 and this exact vLLM-Omni source tree, downloads
 IndexTTS 2.5, launches the local Omni API, waits for model readiness, and then
 starts Gradio. Stage 0 and Stage 1 both use logical GPU 0.
 
+The bootstrap also applies an idempotent compatibility fix to FlashInfer
+0.6.16. Its `flashinfer.comm.fd_exchange` module ships an evaluated
+`array.array[int]` annotation that fails on Python 3.11 before the engine can
+start. The annotation-only patch does not change kernels or communication
+behavior, and the script immediately verifies `import flashinfer.comm`.
+
 ## Copy and run
 
 The repository contains uncommitted experimental changes, so copy the complete
@@ -160,6 +166,11 @@ nvidia-smi
 The first startup can remain quiet for several minutes while Stage 1 performs
 `torch.compile`; the script waits up to 30 minutes. If startup exits, it prints
 the last 200 API log lines.
+
+If an earlier clone failed with `TypeError: type 'array.array' is not
+subscriptable`, pull the latest repository update and rerun the same deployment
+script. It repairs the existing project-local environment before starting the
+server.
 
 For CUDA OOM, first confirm no unrelated GPU processes exist. Do not change
 precision, diffusion steps, or the two `gpu_memory_utilization` values until

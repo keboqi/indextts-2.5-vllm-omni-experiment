@@ -47,6 +47,10 @@ source "${VENV_DIR}/bin/activate"
 log "Installing or verifying vLLM ${VLLM_VERSION}"
 uv pip install "vllm==${VLLM_VERSION}" --torch-backend=auto
 
+log "Applying the Python 3.11 compatibility fix for FlashInfer 0.6.16"
+python "${SCRIPT_DIR}/src/indextts25_compat/patch_flashinfer.py"
+python -c 'import flashinfer.comm; print("FlashInfer communication module import: OK")'
+
 log "Installing this pinned vLLM-Omni source with IndexTTS dependencies"
 uv pip install -e "${REPO_ROOT}[indextts2]"
 uv pip install -e "${SCRIPT_DIR}[webui]"
