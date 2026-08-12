@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
+SUPPORTED_LANGUAGES = ("zh", "en", "ja", "es", "ar")
+
+
 @dataclass(frozen=True, slots=True)
 class BackendCapabilities:
     native_streaming: bool
@@ -53,3 +56,8 @@ class SynthesisRequest:
             raise ValueError("emotion_weight must be between 0 and 1")
         if self.emotion_vector is not None and len(self.emotion_vector) != 8:
             raise ValueError("emotion_vector must contain exactly 8 values")
+        if self.language is not None and self.language.strip().lower() not in SUPPORTED_LANGUAGES:
+            raise ValueError(
+                "unsupported IndexTTS 2.5 synthesis language; expected one of "
+                + ", ".join(SUPPORTED_LANGUAGES)
+            )

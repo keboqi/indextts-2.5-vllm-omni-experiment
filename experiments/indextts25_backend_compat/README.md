@@ -37,7 +37,7 @@ prosody must be benchmarked separately from the current 2.0 implementation.
 | Parallel segment requests | Implemented with a configurable semaphore (default 4) |
 | Inter-sentence silence | Implemented for final WAV |
 | Sentence-level streaming | Implemented; explicitly not native |
-| Language selection | Implemented; defaults to `zhen` mixed Chinese/English |
+| Language selection | Chinese (`zh`), English (`en`), Japanese (`ja`), Spanish (`es`), and Arabic (`ar`); defaults to Chinese |
 | Emotion audio/text/vector/random + weight | Implemented |
 | Seed and sampling overrides | Forwarded |
 | Native precise target duration | Experimental Stage-1 patch |

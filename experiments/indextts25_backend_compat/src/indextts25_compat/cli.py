@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .backend import IndexTTS25Backend
 from .client import OmniClient
-from .models import SynthesisRequest
+from .models import SUPPORTED_LANGUAGES, SynthesisRequest
 
 
 async def run(args: argparse.Namespace) -> None:
@@ -44,7 +44,7 @@ def main() -> None:
     speaker.add_argument("--ref-audio")
     speaker.add_argument("--voice")
     parser.add_argument("--output", type=Path, default=Path("indextts25-smoke.wav"))
-    parser.add_argument("--language", default="zhen")
+    parser.add_argument("--language", choices=SUPPORTED_LANGUAGES, default="zh")
     parser.add_argument("--target-ms", type=int, default=0)
     parser.add_argument("--duration-control", choices=("original", "native", "ffmpeg"), default="native")
     parser.add_argument("--silence-ms", type=int, default=0)

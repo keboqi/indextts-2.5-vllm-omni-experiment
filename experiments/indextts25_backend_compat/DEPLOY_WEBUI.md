@@ -135,7 +135,7 @@ real-time factor, exact-duration error, and GPU snapshots.
 
 Selectable groups include:
 
-- English, Mandarin, mixed Chinese/English, Japanese, and Cantonese.
+- Chinese, English, Japanese, Spanish, and Arabic (the five languages supported by the IndexTTS 2.5 release).
 - Exact-duration sweep with an unconstrained baseline.
 - Diffusion-step quality/latency sweep.
 - Neutral, emotion-text, and emotion-vector comparisons.

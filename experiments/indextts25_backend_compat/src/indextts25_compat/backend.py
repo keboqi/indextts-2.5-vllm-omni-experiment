@@ -36,7 +36,7 @@ class IndexTTS25Backend:
         extras: dict[str, Any] = dict(request.sampling)
         extras.update(
             {
-                "lang": request.language or "zhen",
+                "lang": request.language.strip().lower() if request.language else "zh",
                 "text_normalization": True,
                 "diffusion_steps": request.diffusion_steps,
             }

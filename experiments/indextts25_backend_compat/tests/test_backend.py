@@ -11,7 +11,7 @@ from indextts25_compat.audio import ffmpeg_fit_duration, join_wav, wav_duration_
 from indextts25_compat.backend import IndexTTS25Backend
 from indextts25_compat.benchmark import percentile, summarize_concurrency_results, summarize_gpu_samples
 from indextts25_compat.client import OmniClient
-from indextts25_compat.models import SynthesisRequest
+from indextts25_compat.models import SUPPORTED_LANGUAGES, SynthesisRequest
 from indextts25_compat.text import allocate_durations, clean_text, split_text
 
 from indextts25_compat.patch_flashinfer import NEW_ANNOTATION, OLD_ANNOTATION, patch_file
@@ -65,6 +65,26 @@ class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
     def test_optional_gradio_text_values_are_normalized(self):
         self.assertEqual(clean_text(None), "")
         self.assertEqual(clean_text("  hello  "), "hello")
+
+    def test_release_language_contract_and_chinese_default(self):
+        self.assertEqual(SUPPORTED_LANGUAGES, ("zh", "en", "ja", "es", "ar"))
+        backend = IndexTTS25Backend(FakeClient())  # type: ignore[arg-type]
+        request = SynthesisRequest(
+            text="你好。",
+            output_path=Path("unused.wav"),
+            speaker_preset="alice",
+        )
+        request.validate()
+        self.assertEqual(backend.build_payload(request, text=request.text)["extra_params"]["lang"], "zh")
+
+        unsupported = SynthesisRequest(
+            text="Bonjour.",
+            output_path=Path("unused.wav"),
+            speaker_preset="alice",
+            language="fr",
+        )
+        with self.assertRaisesRegex(ValueError, "unsupported IndexTTS 2.5 synthesis language"):
+            unsupported.validate()
 
     def test_concurrency_benchmark_statistics(self):
         self.assertEqual(percentile([1.0, 2.0, 3.0, 4.0], 0.5), 2.5)

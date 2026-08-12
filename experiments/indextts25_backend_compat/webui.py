@@ -14,7 +14,7 @@ from typing import Any
 
 import gradio as gr
 
-from indextts25_compat import IndexTTS25Backend, OmniClient, SynthesisRequest
+from indextts25_compat import IndexTTS25Backend, OmniClient, SUPPORTED_LANGUAGES, SynthesisRequest
 from indextts25_compat.benchmark import summarize_concurrency_results, summarize_gpu_samples
 from indextts25_compat.text import clean_text
 
@@ -32,7 +32,14 @@ def parse_args() -> argparse.Namespace:
 ARGS = parse_args()
 ARGS.results_dir.mkdir(parents=True, exist_ok=True)
 
-LANGUAGES = ["zhen", "zh", "en", "ja", "yue", "es", "ar", "de", "fr", "ko"]
+LANGUAGES = [
+    ("Chinese / 中文", "zh"),
+    ("English", "en"),
+    ("Japanese / 日本語", "ja"),
+    ("Spanish / Español", "es"),
+    ("Arabic / العربية", "ar"),
+]
+assert tuple(value for _, value in LANGUAGES) == SUPPORTED_LANGUAGES
 TEST_CHOICES = [
     "Multilingual",
     "Exact duration",
@@ -501,11 +508,11 @@ async def run_suite(
     suite_started = time.perf_counter()
 
     language_cases = {
-        "en": "Hello, this is an English synthesis validation sentence.",
         "zh": "你好，这是中文语音合成验证。",
-        "zhen": "Hello，欢迎进行 IndexTTS 二点五混合语言测试。",
+        "en": "Hello, this is an English synthesis validation sentence.",
         "ja": "こんにちは、これは日本語音声合成のテストです。",
-        "yue": "你好，呢段係粵語語音合成測試。",
+        "es": "Hola, esta es una prueba de síntesis de voz en español.",
+        "ar": "مرحبًا، هذا اختبار لتوليد الكلام باللغة العربية.",
     }
     try:
         if "Multilingual" in tests:
@@ -863,11 +870,11 @@ def build_ui() -> gr.Blocks:
                     text = gr.Textbox(
                         label="Text",
                         lines=6,
-                        value="Hello，欢迎测试 IndexTTS 二点五。",
+                        value="你好，欢迎测试 IndexTTS 二点五语音合成。",
                     )
                     reference = gr.Audio(label="Speaker reference WAV", type="filepath", sources=["upload"])
                     voice = gr.Textbox(label="Uploaded voice name (alternative to reference audio)")
-                    language = gr.Dropdown(LANGUAGES, value="zhen", label="Language")
+                    language = gr.Dropdown(LANGUAGES, value="zh", label="Language")
                 with gr.Column():
                     target_ms = gr.Number(value=0, precision=0, label="Target duration (ms; 0 disables)")
                     duration_control = gr.Radio(

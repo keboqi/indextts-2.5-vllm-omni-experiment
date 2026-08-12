@@ -2,6 +2,12 @@
 
 from .backend import IndexTTS25Backend
 from .client import OmniClient
-from .models import BackendCapabilities, SynthesisRequest
+from .models import BackendCapabilities, SUPPORTED_LANGUAGES, SynthesisRequest
 
-__all__ = ["BackendCapabilities", "IndexTTS25Backend", "OmniClient", "SynthesisRequest"]
+__all__ = [
+    "BackendCapabilities",
+    "IndexTTS25Backend",
+    "OmniClient",
+    "SUPPORTED_LANGUAGES",
+    "SynthesisRequest",
+]
