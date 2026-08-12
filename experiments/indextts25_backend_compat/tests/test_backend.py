@@ -9,6 +9,7 @@ from pathlib import Path
 
 from indextts25_compat.audio import ffmpeg_fit_duration, join_wav, wav_duration_ms
 from indextts25_compat.backend import IndexTTS25Backend
+from indextts25_compat.benchmark import percentile, summarize_concurrency_results, summarize_gpu_samples
 from indextts25_compat.client import OmniClient
 from indextts25_compat.models import SynthesisRequest
 from indextts25_compat.text import allocate_durations, split_text
@@ -61,6 +62,39 @@ class FakeHTTP:
 
 
 class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
+    def test_concurrency_benchmark_statistics(self):
+        self.assertEqual(percentile([1.0, 2.0, 3.0, 4.0], 0.5), 2.5)
+        summary = summarize_concurrency_results(
+            [
+                {"status": "pass", "elapsed_s": 1.0, "duration_ms": 2000},
+                {"status": "pass", "elapsed_s": 2.0, "duration_ms": 3000},
+                {"status": "fail", "elapsed_s": 0.5},
+            ],
+            wall_s=2.0,
+        )
+        self.assertEqual(summary["successes"], 2)
+        self.assertEqual(summary["failures"], 1)
+        self.assertEqual(summary["requests_per_s"], 1.0)
+        self.assertEqual(summary["audio_s_per_wall_s"], 2.5)
+        self.assertEqual(summary["latency_p50_s"], 1.5)
+
+        gpu = summarize_gpu_samples(
+            [
+                {"memory_used_mb": 40000, "utilization_percent": 50, "power_w": 200, "temperature_c": 60},
+                {"memory_used_mb": 52000, "utilization_percent": 100, "power_w": 300, "temperature_c": 70},
+            ]
+        )
+        self.assertEqual(gpu["memory_peak_mb"], 52000.0)
+        self.assertEqual(gpu["memory_peak_delta_mb"], 12000.0)
+        self.assertEqual(gpu["gpu_utilization_avg_percent"], 75.0)
+
+    def test_webui_exposes_capacity_sweep_defaults(self):
+        experiment_dir = Path(__file__).resolve().parents[1]
+        webui = (experiment_dir / "webui.py").read_text(encoding="utf-8")
+        self.assertIn('value="4,8,16,32,64,100"', webui)
+        self.assertIn('value=100,\n                        step=1,\n                        label="Measured requests per level"', webui)
+        self.assertIn('group": "concurrency_benchmark"', webui)
+
     def test_deployment_bundles_all_external_runtime_models(self):
         experiment_dir = Path(__file__).resolve().parents[1]
         deployment = (experiment_dir / "deploy_and_webui.sh").read_text(encoding="utf-8")

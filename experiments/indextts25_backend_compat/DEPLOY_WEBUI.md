@@ -139,7 +139,7 @@ Selectable groups include:
 - Exact-duration sweep with an unconstrained baseline.
 - Diffusion-step quality/latency sweep.
 - Neutral, emotion-text, and emotion-vector comparisons.
-- Mixed target-duration/diffusion requests under concurrency.
+- Concurrent capacity sweep with separate fixed and mixed workloads.
 - Ordered sentence-level compatibility streaming with chunk-arrival timing.
 - Repeated-inference VRAM stability sampling.
 - Temporary named-voice upload, synthesis, listing, and deletion.
@@ -155,6 +155,24 @@ the physical GPU work at 32 Stage 0 sequences, 8 Stage 1 sequences, and an
 memory-intensive decoder batch: excess work remains queued in vLLM instead of
 turning a burst of 100 requests into an effective 200-item CFG DiT batch.
 
+The concurrency benchmark defaults to levels 4, 8, 16, 32, 64, and 100 with
+100 measured requests at every level. Before measurement, each level runs a
+warm-up wave up to the physical Stage 0 capacity so new Torch batch shapes and
+compilation costs are reported separately. Its summary includes:
+
+- Successful/failed requests and success rate.
+- Requests per second and generated audio seconds per wall second.
+- Aggregate RTF plus mean, p50, p95, p99, and maximum request latency.
+- Continuously sampled peak VRAM, average/peak GPU utilization, power, and
+  peak temperature.
+- Per-request timing and every raw GPU sample in a level-specific
+  `benchmark.json`.
+
+The `fixed` workload holds duration and diffusion steps constant to maximize
+batch compatibility. The `mixed` workload rotates durations from 2.0 to 3.5
+seconds and diffusion steps 10, 15, 25, and 40 to expose real-world batch
+fragmentation. Run both before selecting production limits.
+
 ### Named voices
 
 Provides upload/list/delete controls with explicit consent metadata. Named
@@ -164,9 +182,9 @@ voices persist in `runtime/indextts25/speakers` and are restored on restart.
 
 1. Open **Server status** and verify the model and RTX PRO 6000 are visible.
 2. Generate one English and one Mandarin clip in **Single synthesis**.
-3. Run the default automated suite with 100 concurrent requests and ten
-   stability repetitions while watching peak VRAM. For a quicker functional
-   check, lower the concurrency slider to 8.
+3. Run the default fixed-workload concurrency sweep and ten stability
+   repetitions. For a quicker functional check, use levels `4,8` and 16
+   measured requests per level.
 4. Download and listen to the complete ZIP.
 5. Repeat duration tests around the natural baseline rather than accepting
    only the exact file length.
@@ -175,10 +193,10 @@ voices persist in `runtime/indextts25/speakers` and are restored on restart.
 8. Compare the accepted outputs blindly against the current IndexTTS 2.0
    backend before integration.
 
-For capacity tuning, repeat the concurrency group at 4, 8, 16, 32, 64, and
-100. Compare aggregate audio seconds per wall second and tail latency; the
-configured 100 is an in-flight admission limit, not a physical decoder batch
-of 100.
+After the fixed sweep, repeat it with the mixed workload. Select the production
+limit from the point where throughput stops improving, p95/p99 latency rises
+sharply, or peak VRAM loses a safe margin. The configured 100 is an in-flight
+admission limit, not a physical decoder batch of 100.
 
 ## Logs and troubleshooting
 

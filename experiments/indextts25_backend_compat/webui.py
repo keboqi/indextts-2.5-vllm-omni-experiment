@@ -15,6 +15,7 @@ from typing import Any
 import gradio as gr
 
 from indextts25_compat import IndexTTS25Backend, OmniClient, SynthesisRequest
+from indextts25_compat.benchmark import summarize_concurrency_results, summarize_gpu_samples
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,7 +37,7 @@ TEST_CHOICES = [
     "Exact duration",
     "Diffusion steps",
     "Emotion",
-    "Concurrency",
+    "Concurrency benchmark",
     "Compatibility streaming",
     "Stability",
     "Named voice",
@@ -96,6 +97,36 @@ def gpu_snapshot() -> dict[str, Any]:
         }
     except Exception as exc:
         return {"error": str(exc)}
+
+
+class GPUSampler:
+    def __init__(self, interval_s: float = 0.25) -> None:
+        self.interval_s = interval_s
+        self.samples: list[dict[str, Any]] = []
+        self._stop = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+
+    async def __aenter__(self) -> GPUSampler:
+        self._task = asyncio.create_task(self._sample())
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        self._stop.set()
+        if self._task is not None:
+            await self._task
+
+    async def _sample(self) -> None:
+        started = time.perf_counter()
+        while True:
+            sample = await asyncio.to_thread(gpu_snapshot)
+            sample["offset_s"] = round(time.perf_counter() - started, 3)
+            self.samples.append(sample)
+            if self._stop.is_set():
+                return
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=self.interval_s)
+            except TimeoutError:
+                pass
 
 
 def make_request(
@@ -258,12 +289,186 @@ class SuiteRecorder:
         return row
 
 
+def benchmark_controls(
+    index: int,
+    *,
+    profile: str,
+    target_ms: int,
+    diffusion_steps: int,
+) -> tuple[int, int]:
+    if profile == "mixed":
+        targets = [2000, 2500, 3000, 3500]
+        steps = [10, 15, 25, 40]
+        return targets[index % len(targets)], steps[index % len(steps)]
+    return target_ms, diffusion_steps
+
+
+async def run_benchmark_batch(
+    backend: IndexTTS25Backend,
+    *,
+    output_dir: Path,
+    reference: str,
+    concurrency: int,
+    request_count: int,
+    profile: str,
+    target_ms: int,
+    diffusion_steps: int,
+    seed: int,
+) -> tuple[list[dict[str, Any]], float]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    queue: asyncio.Queue[int] = asyncio.Queue()
+    for index in range(request_count):
+        queue.put_nowait(index)
+    results: list[dict[str, Any]] = []
+
+    async def worker() -> None:
+        while True:
+            try:
+                index = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            request_target, request_steps = benchmark_controls(
+                index,
+                profile=profile,
+                target_ms=target_ms,
+                diffusion_steps=diffusion_steps,
+            )
+            output = output_dir / f"request-{index + 1:04d}.wav"
+            started = time.perf_counter()
+            row: dict[str, Any] = {
+                "request_index": index + 1,
+                "target_ms": request_target,
+                "diffusion_steps": request_steps,
+            }
+            try:
+                result = await backend.synthesize(
+                    make_request(
+                        text=(
+                            "Concurrent synthesis measures scheduler batching, decoder throughput, "
+                            "latency, and request isolation under sustained load."
+                        ),
+                        output=output,
+                        reference=reference,
+                        voice=None,
+                        language="en",
+                        target_ms=request_target,
+                        diffusion_steps=request_steps,
+                        seed=seed + index,
+                    )
+                )
+                elapsed = time.perf_counter() - started
+                info = wav_info(result)
+                row.update(
+                    status="pass",
+                    output=str(result),
+                    elapsed_s=round(elapsed, 4),
+                    duration_ms=round(info["duration_ms"], 3),
+                    rtf=round(elapsed / (info["duration_ms"] / 1000.0), 4),
+                )
+            except Exception as exc:
+                row.update(
+                    status="fail",
+                    elapsed_s=round(time.perf_counter() - started, 4),
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            results.append(row)
+            queue.task_done()
+
+    started = time.perf_counter()
+    workers = [asyncio.create_task(worker()) for _ in range(min(concurrency, request_count))]
+    await asyncio.gather(*workers)
+    results.sort(key=lambda row: int(row["request_index"]))
+    return results, time.perf_counter() - started
+
+
+async def run_concurrency_benchmark(
+    recorder: SuiteRecorder,
+    backend: IndexTTS25Backend,
+    *,
+    run_dir: Path,
+    reference: str,
+    levels: list[int],
+    requests_per_level: int,
+    profile: str,
+    target_ms: int,
+    diffusion_steps: int,
+    seed: int,
+) -> None:
+    benchmark_dir = run_dir / "concurrency-benchmark"
+    for concurrency in levels:
+        level_dir = benchmark_dir / f"c{concurrency:03d}-{profile}"
+        warmup_count = min(concurrency, 32)
+        async with GPUSampler() as warmup_gpu:
+            warmup_results, warmup_wall_s = await run_benchmark_batch(
+                backend,
+                output_dir=level_dir / "warmup",
+                reference=reference,
+                concurrency=concurrency,
+                request_count=warmup_count,
+                profile=profile,
+                target_ms=target_ms,
+                diffusion_steps=diffusion_steps,
+                seed=seed + 1_000_000 + concurrency * 1000,
+            )
+
+        async with GPUSampler() as measured_gpu:
+            results, wall_s = await run_benchmark_batch(
+                backend,
+                output_dir=level_dir / "measured",
+                reference=reference,
+                concurrency=concurrency,
+                request_count=requests_per_level,
+                profile=profile,
+                target_ms=target_ms,
+                diffusion_steps=diffusion_steps,
+                seed=seed + concurrency * 1000,
+            )
+
+        metrics = summarize_concurrency_results(results, wall_s=wall_s)
+        gpu_metrics = summarize_gpu_samples(measured_gpu.samples)
+        warmup_gpu_metrics = summarize_gpu_samples(warmup_gpu.samples)
+        detail = {
+            "concurrency": concurrency,
+            "profile": profile,
+            "warmup_request_count": warmup_count,
+            "warmup_wall_s": round(warmup_wall_s, 3),
+            "warmup_results": warmup_results,
+            "warmup_gpu_samples": warmup_gpu.samples,
+            "warmup_gpu_summary": warmup_gpu_metrics,
+            "measured_results": results,
+            "measured_gpu_samples": measured_gpu.samples,
+            "measured_gpu_summary": gpu_metrics,
+        }
+        detail_path = level_dir / "benchmark.json"
+        detail_path.write_text(json.dumps(detail, indent=2), encoding="utf-8")
+        recorder.rows.append(
+            {
+                "label": f"concurrency-benchmark-{profile}-c{concurrency}",
+                "group": "concurrency_benchmark",
+                "status": "pass" if metrics["failures"] == 0 else "fail",
+                "concurrency": concurrency,
+                "profile": profile,
+                "warmup_request_count": warmup_count,
+                "warmup_wall_s": round(warmup_wall_s, 3),
+                "warmup_failures": sum(row.get("status") != "pass" for row in warmup_results),
+                "warmup_memory_peak_mb": warmup_gpu_metrics["memory_peak_mb"],
+                **metrics,
+                **gpu_metrics,
+                "details": str(detail_path),
+            }
+        )
+
+
 async def run_suite(
     reference: str | None,
     tests: list[str],
     duration_targets: str,
     diffusion_values: str,
-    concurrency: int,
+    concurrency_levels: str,
+    benchmark_requests: int,
+    benchmark_profile: str,
+    benchmark_target_ms: int,
+    benchmark_diffusion_steps: int,
     stability_repeats: int,
     seed: int,
 ) -> tuple[str, str | None]:
@@ -273,9 +478,20 @@ async def run_suite(
         raise gr.Error("Select at least one test group.")
     targets = parse_numbers(duration_targets, int)
     steps_values = parse_numbers(diffusion_values, int)
+    levels = sorted(set(parse_numbers(concurrency_levels, int)))
+    if not levels or any(level < 1 or level > 100 for level in levels):
+        raise gr.Error("Concurrency levels must contain values between 1 and 100.")
+    if not 1 <= int(benchmark_requests) <= 1000:
+        raise gr.Error("Measured requests per concurrency level must be between 1 and 1000.")
+    if benchmark_profile not in {"fixed", "mixed"}:
+        raise gr.Error("Benchmark workload must be fixed or mixed.")
+    if int(benchmark_target_ms) < 250:
+        raise gr.Error("Benchmark target duration must be at least 250 ms.")
+    if not 1 <= int(benchmark_diffusion_steps) <= 100:
+        raise gr.Error("Benchmark diffusion steps must be between 1 and 100.")
     run_dir = unique_run_dir("suite")
     recorder = SuiteRecorder(run_dir)
-    client, backend = await with_backend(max_parallel=max(1, int(concurrency)))
+    client, backend = await with_backend(max_parallel=max(levels))
     gpu_before = gpu_snapshot()
     suite_started = time.perf_counter()
 
@@ -384,36 +600,18 @@ async def run_suite(
                     group="emotion",
                 )
 
-        if "Concurrency" in tests:
-            batch_started = time.perf_counter()
-            tasks = [
-                recorder.synth(
-                    backend,
-                    f"concurrency-{index + 1}",
-                    make_request(
-                        text=f"Concurrent request number {index + 1} checks scheduling and request isolation.",
-                        output=run_dir / f"concurrency-{index + 1}.wav",
-                        reference=reference,
-                        voice=None,
-                        language="en",
-                        diffusion_steps=10 + (index % 2) * 15,
-                        target_ms=2500 + (index % 2) * 500,
-                        seed=seed + index,
-                    ),
-                    group="concurrency",
-                    requested_concurrency=concurrency,
-                )
-                for index in range(int(concurrency))
-            ]
-            await asyncio.gather(*tasks)
-            recorder.rows.append(
-                {
-                    "label": "concurrency-summary",
-                    "group": "concurrency",
-                    "status": "pass",
-                    "request_count": int(concurrency),
-                    "wall_s": round(time.perf_counter() - batch_started, 3),
-                }
+        if "Concurrency benchmark" in tests:
+            await run_concurrency_benchmark(
+                recorder,
+                backend,
+                run_dir=run_dir,
+                reference=reference,
+                levels=levels,
+                requests_per_level=int(benchmark_requests),
+                profile=benchmark_profile,
+                target_ms=int(benchmark_target_ms),
+                diffusion_steps=int(benchmark_diffusion_steps),
+                seed=int(seed),
             )
 
         if "Compatibility streaming" in tests:
@@ -557,6 +755,13 @@ async def run_suite(
         "api_base": ARGS.api_base,
         "model": ARGS.model,
         "selected_tests": tests,
+        "concurrency_benchmark": {
+            "levels": levels,
+            "requests_per_level": int(benchmark_requests),
+            "profile": benchmark_profile,
+            "target_ms": int(benchmark_target_ms),
+            "diffusion_steps": int(benchmark_diffusion_steps),
+        },
         "elapsed_s": round(time.perf_counter() - suite_started, 3),
         "gpu_before": gpu_before,
         "gpu_after": gpu_snapshot(),
@@ -567,6 +772,22 @@ async def run_suite(
     archive_path = Path(shutil.make_archive(str(run_dir), "zip", root_dir=run_dir))
     failures = sum(row.get("status") == "fail" for row in recorder.rows)
     passes = sum(row.get("status") == "pass" for row in recorder.rows)
+    benchmark_rows = [row for row in recorder.rows if row.get("group") == "concurrency_benchmark"]
+    benchmark_table = ""
+    if benchmark_rows:
+        benchmark_table = (
+            "\n\n### Concurrency benchmark\n\n"
+            "| C | Success | req/s | audio s/s | p50 | p95 | p99 | peak VRAM MB | GPU avg |\n"
+            "|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n"
+        )
+        for row in benchmark_rows:
+            benchmark_table += (
+                f"| {row['concurrency']} | {row['successes']}/{row['request_count']} "
+                f"| {row.get('requests_per_s')} | {row.get('audio_s_per_wall_s')} "
+                f"| {row.get('latency_p50_s')} | {row.get('latency_p95_s')} "
+                f"| {row.get('latency_p99_s')} | {row.get('memory_peak_mb')} "
+                f"| {row.get('gpu_utilization_avg_percent')}% |\n"
+            )
     markdown = (
         f"## Suite complete\n\n"
         f"- Passed records: **{passes}**\n"
@@ -577,7 +798,7 @@ async def run_suite(
         "Download and listen to the generated clips for word omissions, unnatural pacing, "
         "speaker drift, emotion drift, and sentence-boundary discontinuity."
     )
-    return markdown + "\n\n```json\n" + json.dumps(recorder.rows, indent=2) + "\n```", str(archive_path)
+    return markdown + benchmark_table + "\n\n```json\n" + json.dumps(recorder.rows, indent=2) + "\n```", str(archive_path)
 
 
 async def voice_list() -> str:
@@ -693,9 +914,41 @@ def build_ui() -> gr.Blocks:
             with gr.Row():
                 duration_targets = gr.Textbox(value="2000,4000,6000", label="Duration targets (ms)")
                 diffusion_values = gr.Textbox(value="10,15,25,40", label="Diffusion step values")
-                concurrency = gr.Slider(1, 100, value=100, step=1, label="Concurrent requests")
                 stability_repeats = gr.Slider(1, 100, value=10, step=1, label="Stability repetitions")
                 suite_seed = gr.Number(value=42, precision=0, label="Base seed")
+            with gr.Accordion("Concurrency benchmark", open=True):
+                gr.Markdown(
+                    "Each level runs a warm-up wave, then the same number of measured requests. "
+                    "Use `fixed` for maximum batching throughput and `mixed` for realistic batch fragmentation."
+                )
+                with gr.Row():
+                    concurrency_levels = gr.Textbox(
+                        value="4,8,16,32,64,100",
+                        label="Concurrency levels",
+                    )
+                    benchmark_requests = gr.Slider(
+                        1,
+                        1000,
+                        value=100,
+                        step=1,
+                        label="Measured requests per level",
+                    )
+                    benchmark_profile = gr.Radio(
+                        ["fixed", "mixed"],
+                        value="fixed",
+                        label="Workload",
+                    )
+                with gr.Row():
+                    benchmark_target_ms = gr.Number(
+                        value=2500,
+                        precision=0,
+                        label="Fixed workload duration (ms)",
+                    )
+                    benchmark_diffusion_steps = gr.Number(
+                        value=15,
+                        precision=0,
+                        label="Fixed workload diffusion steps",
+                    )
             suite_button = gr.Button("Run selected suite", variant="primary")
             suite_report = gr.Markdown()
             suite_archive = gr.File(label="Download complete result archive")
@@ -706,7 +959,11 @@ def build_ui() -> gr.Blocks:
                     selected_tests,
                     duration_targets,
                     diffusion_values,
-                    concurrency,
+                    concurrency_levels,
+                    benchmark_requests,
+                    benchmark_profile,
+                    benchmark_target_ms,
+                    benchmark_diffusion_steps,
                     stability_repeats,
                     suite_seed,
                 ],
