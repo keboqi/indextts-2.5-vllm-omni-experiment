@@ -73,6 +73,16 @@ class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(repo_id, deployment)
                 self.assertIn(required_asset, deployment)
 
+    def test_high_throughput_profile_keeps_decoder_batch_bounded(self):
+        repo_root = Path(__file__).resolve().parents[3]
+        deploy_config = (repo_root / "vllm_omni" / "deploy" / "indextts2_5.yaml").read_text(encoding="utf-8")
+        self.assertEqual(deploy_config.count("max_num_seqs: 32"), 1)
+        self.assertEqual(deploy_config.count("max_num_seqs: 8"), 1)
+        self.assertEqual(deploy_config.count("s2mel_cfm_batch_size: 8"), 1)
+
+        backend = IndexTTS25Backend(FakeClient())  # type: ignore[arg-type]
+        self.assertEqual(backend._segment_slots._value, 100)
+
     def test_flashinfer_python311_annotation_patch_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "fd_exchange.py"

@@ -149,6 +149,12 @@ The suite produces a ZIP containing every WAV and a machine-readable
 for word omissions, unnatural pacing, speaker drift, emotion drift, clipping,
 silence, and discontinuities between independently generated sentences.
 
+The default high-throughput profile admits up to 100 requests while bounding
+the physical GPU work at 32 Stage 0 sequences, 8 Stage 1 sequences, and an
+8-request CFM microbatch. Admission capacity is intentionally larger than the
+memory-intensive decoder batch: excess work remains queued in vLLM instead of
+turning a burst of 100 requests into an effective 200-item CFG DiT batch.
+
 ### Named voices
 
 Provides upload/list/delete controls with explicit consent metadata. Named
@@ -158,8 +164,9 @@ voices persist in `runtime/indextts25/speakers` and are restored on restart.
 
 1. Open **Server status** and verify the model and RTX PRO 6000 are visible.
 2. Generate one English and one Mandarin clip in **Single synthesis**.
-3. Run the default automated suite with concurrency four and ten stability
-   repetitions.
+3. Run the default automated suite with 100 concurrent requests and ten
+   stability repetitions while watching peak VRAM. For a quicker functional
+   check, lower the concurrency slider to 8.
 4. Download and listen to the complete ZIP.
 5. Repeat duration tests around the natural baseline rather than accepting
    only the exact file length.
@@ -167,6 +174,11 @@ voices persist in `runtime/indextts25/speakers` and are restored on restart.
 7. Increase stability repetitions to 100 only after the short suite is clean.
 8. Compare the accepted outputs blindly against the current IndexTTS 2.0
    backend before integration.
+
+For capacity tuning, repeat the concurrency group at 4, 8, 16, 32, 64, and
+100. Compare aggregate audio seconds per wall second and tail latency; the
+configured 100 is an in-flight admission limit, not a physical decoder batch
+of 100.
 
 ## Logs and troubleshooting
 

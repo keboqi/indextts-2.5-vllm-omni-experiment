@@ -139,7 +139,7 @@ def make_request(
     )
 
 
-async def with_backend(max_parallel: int = 4) -> tuple[OmniClient, IndexTTS25Backend]:
+async def with_backend(max_parallel: int = 100) -> tuple[OmniClient, IndexTTS25Backend]:
     client = OmniClient(ARGS.api_base)
     return client, IndexTTS25Backend(client, model=ARGS.model, max_parallel_segments=max_parallel)
 
@@ -693,7 +693,7 @@ def build_ui() -> gr.Blocks:
             with gr.Row():
                 duration_targets = gr.Textbox(value="2000,4000,6000", label="Duration targets (ms)")
                 diffusion_values = gr.Textbox(value="10,15,25,40", label="Diffusion step values")
-                concurrency = gr.Slider(1, 8, value=4, step=1, label="Concurrent requests")
+                concurrency = gr.Slider(1, 100, value=100, step=1, label="Concurrent requests")
                 stability_repeats = gr.Slider(1, 100, value=10, step=1, label="Stability repetitions")
                 suite_seed = gr.Number(value=42, precision=0, label="Base seed")
             suite_button = gr.Button("Run selected suite", variant="primary")
@@ -741,7 +741,7 @@ def build_ui() -> gr.Blocks:
 
 
 if __name__ == "__main__":
-    build_ui().queue(default_concurrency_limit=8).launch(
+    build_ui().queue(default_concurrency_limit=100).launch(
         server_name=ARGS.host,
         server_port=ARGS.port,
         show_error=True,

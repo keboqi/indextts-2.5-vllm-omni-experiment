@@ -24,7 +24,7 @@ class IndexTTS25Backend:
         self,
         client: OmniClient,
         model: str = "IndexTeam/IndexTTS-2.5",
-        max_parallel_segments: int = 4,
+        max_parallel_segments: int = 100,
     ) -> None:
         if max_parallel_segments < 1:
             raise ValueError("max_parallel_segments must be positive")

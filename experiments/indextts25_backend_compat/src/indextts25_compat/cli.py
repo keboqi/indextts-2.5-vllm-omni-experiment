@@ -51,7 +51,7 @@ def main() -> None:
     parser.add_argument("--diffusion-steps", type=int, default=10)
     parser.add_argument("--emotion-text")
     parser.add_argument("--seed", type=int)
-    parser.add_argument("--parallel", type=int, default=4)
+    parser.add_argument("--parallel", type=int, default=100)
     asyncio.run(run(parser.parse_args()))
 
 
