@@ -5,6 +5,11 @@ import re
 _BOUNDARY = re.compile(r"(?<=[.!?。！？；;])\s*")
 
 
+def clean_text(value: str | None) -> str:
+    """Normalize optional UI text values; Gradio may return None when empty."""
+    return value.strip() if isinstance(value, str) else ""
+
+
 def split_text(text: str, max_tokens: int) -> list[str]:
     """Split conservatively without rewriting IndexTTS pronunciation markup."""
     text = text.strip()

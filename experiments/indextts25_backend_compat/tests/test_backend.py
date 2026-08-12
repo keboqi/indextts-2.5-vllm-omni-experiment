@@ -12,7 +12,7 @@ from indextts25_compat.backend import IndexTTS25Backend
 from indextts25_compat.benchmark import percentile, summarize_concurrency_results, summarize_gpu_samples
 from indextts25_compat.client import OmniClient
 from indextts25_compat.models import SynthesisRequest
-from indextts25_compat.text import allocate_durations, split_text
+from indextts25_compat.text import allocate_durations, clean_text, split_text
 
 from indextts25_compat.patch_flashinfer import NEW_ANNOTATION, OLD_ANNOTATION, patch_file
 
@@ -62,6 +62,10 @@ class FakeHTTP:
 
 
 class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
+    def test_optional_gradio_text_values_are_normalized(self):
+        self.assertEqual(clean_text(None), "")
+        self.assertEqual(clean_text("  hello  "), "hello")
+
     def test_concurrency_benchmark_statistics(self):
         self.assertEqual(percentile([1.0, 2.0, 3.0, 4.0], 0.5), 2.5)
         summary = summarize_concurrency_results(

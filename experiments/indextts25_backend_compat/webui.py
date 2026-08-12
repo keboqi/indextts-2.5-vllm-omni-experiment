@@ -16,6 +16,7 @@ import gradio as gr
 
 from indextts25_compat import IndexTTS25Backend, OmniClient, SynthesisRequest
 from indextts25_compat.benchmark import summarize_concurrency_results, summarize_gpu_samples
+from indextts25_compat.text import clean_text
 
 
 def parse_args() -> argparse.Namespace:
@@ -51,13 +52,13 @@ def unique_run_dir(prefix: str) -> Path:
     return path
 
 
-def parse_numbers(value: str, kind: type[int] | type[float]) -> list[Any]:
-    values = [item.strip() for item in value.replace(";", ",").split(",") if item.strip()]
+def parse_numbers(value: str | None, kind: type[int] | type[float]) -> list[Any]:
+    values = [item.strip() for item in clean_text(value).replace(";", ",").split(",") if item.strip()]
     return [kind(item) for item in values]
 
 
-def parse_emotion_vector(value: str) -> list[float] | None:
-    if not value.strip():
+def parse_emotion_vector(value: str | None) -> list[float] | None:
+    if not clean_text(value):
         return None
     vector = parse_numbers(value, float)
     if len(vector) != 8:
@@ -176,9 +177,9 @@ async def with_backend(max_parallel: int = 100) -> tuple[OmniClient, IndexTTS25B
 
 
 async def synthesize_ui(
-    text: str,
+    text: str | None,
     reference: str | None,
-    voice: str,
+    voice: str | None,
     language: str,
     target_ms: int,
     duration_control: str,
@@ -186,14 +187,18 @@ async def synthesize_ui(
     max_text_tokens: int,
     diffusion_steps: int,
     emotion_audio: str | None,
-    emotion_text: str,
+    emotion_text: str | None,
     emotion_weight: float,
-    emotion_vector: str,
+    emotion_vector: str | None,
     random_emotion: bool,
     seed: int,
-    sampling_json: str,
+    sampling_json: str | None,
 ) -> tuple[str, str]:
-    if not reference and not voice.strip():
+    normalized_text = clean_text(text)
+    normalized_voice = clean_text(voice)
+    if not normalized_text:
+        raise gr.Error("Text is required.")
+    if not reference and not normalized_voice:
         raise gr.Error("Upload reference audio or enter an uploaded voice name.")
     try:
         sampling = json.loads(sampling_json or "{}")
@@ -208,10 +213,10 @@ async def synthesize_ui(
     before = gpu_snapshot()
     try:
         request = make_request(
-            text=text,
+            text=normalized_text,
             output=output,
             reference=reference,
-            voice=voice.strip() or None,
+            voice=normalized_voice or None,
             language=language,
             target_ms=int(target_ms or 0),
             duration_control=duration_control,
@@ -219,7 +224,7 @@ async def synthesize_ui(
             max_text_tokens=int(max_text_tokens),
             diffusion_steps=int(diffusion_steps),
             emotion_audio=emotion_audio,
-            emotion_text=emotion_text.strip() or None,
+            emotion_text=clean_text(emotion_text) or None,
             emotion_weight=float(emotion_weight),
             emotion_vector=parse_emotion_vector(emotion_vector),
             random_emotion=random_emotion,
@@ -809,29 +814,37 @@ async def voice_list() -> str:
         await client.close()
 
 
-async def voice_add(name: str, audio: str | None, consent: str, ref_text: str, description: str) -> str:
-    if not name.strip() or not audio:
+async def voice_add(
+    name: str | None,
+    audio: str | None,
+    consent: str | None,
+    ref_text: str | None,
+    description: str | None,
+) -> str:
+    normalized_name = clean_text(name)
+    if not normalized_name or not audio:
         raise gr.Error("Voice name and audio are required.")
     client = OmniClient(ARGS.api_base)
     try:
         result = await client.add_voice(
-            name.strip(),
+            normalized_name,
             audio,
-            consent=consent.strip() or "interactive-webui-consent",
-            ref_text=ref_text.strip() or None,
-            speaker_description=description.strip() or None,
+            consent=clean_text(consent) or "interactive-webui-consent",
+            ref_text=clean_text(ref_text) or None,
+            speaker_description=clean_text(description) or None,
         )
         return json.dumps(result, indent=2)
     finally:
         await client.close()
 
 
-async def voice_delete(name: str) -> str:
-    if not name.strip():
+async def voice_delete(name: str | None) -> str:
+    normalized_name = clean_text(name)
+    if not normalized_name:
         raise gr.Error("Voice name is required.")
     client = OmniClient(ARGS.api_base)
     try:
-        return json.dumps(await client.delete_voice(name.strip()), indent=2)
+        return json.dumps(await client.delete_voice(normalized_name), indent=2)
     finally:
         await client.close()
 
