@@ -13,7 +13,7 @@ from .text import allocate_durations, split_text
 
 
 class IndexTTS25Backend:
-    name = "index25_omni_experimental"
+    name = "index25"
     capabilities = BackendCapabilities(
         native_streaming=False,
         native_duration=True,

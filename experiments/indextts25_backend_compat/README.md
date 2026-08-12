@@ -1,7 +1,8 @@
-# IndexTTS 2.5 vLLM-Omni compatibility experiment
+# IndexTTS 2.5 vLLM-Omni compatibility backend
 
-This is an isolated experiment. It does not import or modify the existing
-`index-tts-vllm` application.
+This directory contains the tested compatibility layer, acceptance UI, and the
+API-only launcher consumed by `index-tts-vllm`. The vLLM-Omni runtime remains
+isolated from the application in its own Python 3.11 environment.
 
 For one-command native deployment and browser-based acceptance testing, see
 [`DEPLOY_WEBUI.md`](DEPLOY_WEBUI.md).
@@ -75,6 +76,19 @@ the copied project directory.
 
 Open `http://SERVER_IP:7860`. See [`DEPLOY_WEBUI.md`](DEPLOY_WEBUI.md) for
 persistent-volume, authentication, configuration, and test instructions.
+
+For application integration or another HTTP client, launch only the API:
+
+```bash
+chmod +x experiments/indextts25_backend_compat/serve_api.sh
+INDEXTTS25_HOST=127.0.0.1 INDEXTTS25_PORT=8092 \
+  ./experiments/indextts25_backend_compat/serve_api.sh
+```
+
+`INDEXTTS25_VENV_DIR`, `INDEXTTS25_MODEL_DIR`, and `INDEXTTS25_DATA_DIR` move
+the isolated environment, model bundle, and caches to deployment-specific
+locations. Set `INDEXTTS25_SETUP_RUNTIME=0` when a container image has already
+installed the environment and populated every required model asset.
 
 GPU end-to-end testing requires the IndexTTS 2.5 checkpoint and a CUDA setup
 compatible with this vLLM-Omni PR. Unit tests do not load model weights.

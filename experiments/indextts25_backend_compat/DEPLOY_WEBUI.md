@@ -1,8 +1,9 @@
 # Native deployment and test UI
 
-This deployment uses no Docker. Copy the complete experimental repository to a
-Linux GPU server, run one Bash script, and perform validation in the web UI.
-The existing IndexTTS 2.0 application is not installed or modified.
+This standalone acceptance deployment uses no Docker. Copy the complete
+repository to a Linux GPU server, run one Bash script, and perform validation
+in the web UI. Production integration uses the same `serve_api.sh` setup and
+server path without starting Gradio.
 
 ## Server requirements
 
@@ -26,8 +27,7 @@ behavior, and the script immediately verifies `import flashinfer.comm`.
 
 ## Copy and run
 
-The repository contains uncommitted experimental changes, so copy the complete
-working tree rather than cloning plain vLLM-Omni `main`:
+Copy the integration repository rather than cloning plain vLLM-Omni `main`:
 
 ```bash
 rsync -a \

@@ -136,7 +136,7 @@ class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
 
     def test_deployment_bundles_all_external_runtime_models(self):
         experiment_dir = Path(__file__).resolve().parents[1]
-        deployment = (experiment_dir / "deploy_and_webui.sh").read_text(encoding="utf-8")
+        deployment = (experiment_dir / "serve_api.sh").read_text(encoding="utf-8")
         for repo_id, required_asset in (
             ("facebook/w2v-bert-2.0", "w2v-bert-2.0/model.safetensors"),
             ("funasr/campplus", "campplus_cn_common.bin"),
@@ -151,7 +151,17 @@ class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
             "TRITON_CACHE_DIR",
             "CUDA_CACHE_PATH",
         ):
-            self.assertIn(cache_variable, deployment)
+                self.assertIn(cache_variable, deployment)
+
+    def test_api_launcher_is_configurable_and_does_not_require_the_acceptance_ui(self):
+        experiment_dir = Path(__file__).resolve().parents[1]
+        launcher = (experiment_dir / "serve_api.sh").read_text(encoding="utf-8")
+        self.assertIn('INDEXTTS25_VENV_DIR', launcher)
+        self.assertIn('INDEXTTS25_MODEL_DIR', launcher)
+        self.assertIn('INDEXTTS25_DATA_DIR', launcher)
+        self.assertIn('INDEXTTS25_SERVED_MODEL_NAME', launcher)
+        self.assertIn('exec vllm serve', launcher)
+        self.assertNotIn('webui.py"', launcher)
 
     def test_high_throughput_profile_keeps_decoder_batch_bounded(self):
         repo_root = Path(__file__).resolve().parents[3]

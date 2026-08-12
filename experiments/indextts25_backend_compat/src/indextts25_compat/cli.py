@@ -37,7 +37,7 @@ async def run(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="IndexTTS 2.5/vLLM-Omni experimental smoke test")
+    parser = argparse.ArgumentParser(description="IndexTTS 2.5/vLLM-Omni compatibility smoke test")
     parser.add_argument("--server", default="http://127.0.0.1:8000")
     parser.add_argument("--text", required=True)
     speaker = parser.add_mutually_exclusive_group(required=True)
