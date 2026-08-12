@@ -1502,6 +1502,26 @@ async def list_voices(raw_request: Request):
     return JSONResponse(content={"voices": speakers, "uploaded_voices": uploaded_speakers})
 
 
+@router.get(
+    "/v1/audio/cache",
+    responses={
+        HTTPStatus.OK.value: {"model": dict},
+        HTTPStatus.NOT_FOUND.value: {"model": ErrorResponse},
+    },
+)
+async def audio_cache_stats(raw_request: Request):
+    """Expose reference and speaker-conditioning cache telemetry."""
+    handler = Omnispeech(raw_request)
+    if handler is None:
+        return _create_speech_error_json_response(
+            raw_request,
+            "The model does not support Speech API",
+            err_type="NotFoundError",
+            status_code=HTTPStatus.NOT_FOUND,
+        )
+    return JSONResponse(content=handler.cache_stats())
+
+
 @router.post(
     "/v1/audio/voices",
     responses={

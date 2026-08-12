@@ -10,7 +10,7 @@ from pathlib import Path
 from indextts25_compat.audio import ffmpeg_fit_duration, join_wav, wav_duration_ms
 from indextts25_compat.backend import IndexTTS25Backend
 from indextts25_compat.benchmark import percentile, summarize_concurrency_results, summarize_gpu_samples
-from indextts25_compat.client import OmniClient
+from indextts25_compat.client import OmniClient, audio_reference
 from indextts25_compat.models import SUPPORTED_LANGUAGES, SynthesisRequest
 from indextts25_compat.patch_flashinfer import NEW_ANNOTATION, OLD_ANNOTATION, patch_file
 from indextts25_compat.text import allocate_durations, clean_text, parse_document_chunks, split_text
@@ -127,6 +127,10 @@ class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn('group": "concurrency_benchmark"', webui)
         self.assertIn('group": "document_benchmark"', webui)
+        self.assertIn('"inline-uncached"', webui)
+        self.assertIn('"inline-warm"', webui)
+        self.assertIn('"named-cold"', webui)
+        self.assertIn('"named-warm"', webui)
         self.assertIn('"natural_duration": True', webui)
         self.assertIn("value=DEFAULT_DOCUMENT_CHUNKS", webui)
 
@@ -141,6 +145,13 @@ class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(repo_id=repo_id):
                 self.assertIn(repo_id, deployment)
                 self.assertIn(required_asset, deployment)
+        for cache_variable in (
+            "SPEAKER_CACHE_DIR",
+            "TORCHINDUCTOR_CACHE_DIR",
+            "TRITON_CACHE_DIR",
+            "CUDA_CACHE_PATH",
+        ):
+            self.assertIn(cache_variable, deployment)
 
     def test_high_throughput_profile_keeps_decoder_batch_bounded(self):
         repo_root = Path(__file__).resolve().parents[3]
@@ -226,6 +237,26 @@ class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["extra_params"]["target_duration_ms"], 1000)
         self.assertEqual(payload["extra_params"]["diffusion_steps"], 12)
         self.assertTrue(payload["extra_params"]["use_emo_text"])
+        self.assertTrue(payload["extra_params"]["cache_prompt_audio"])
+
+    def test_prompt_cache_flag_and_local_audio_encoding_cache(self):
+        backend = IndexTTS25Backend(FakeClient())  # type: ignore[arg-type]
+        with tempfile.TemporaryDirectory() as directory:
+            prompt = Path(directory) / "prompt.wav"
+            prompt.write_bytes(wav_bytes())
+            cached_first = audio_reference(str(prompt))
+            cached_second = audio_reference(str(prompt))
+            self.assertIs(cached_first, cached_second)
+
+            request = SynthesisRequest(
+                text="浣犲ソ銆?",
+                output_path=Path(directory) / "out.wav",
+                prompt_audio=str(prompt),
+                cache_prompt_audio=False,
+            )
+            payload = backend.build_payload(request, text=request.text)
+            self.assertFalse(payload["extra_params"]["cache_prompt_audio"])
+            self.assertTrue(payload["ref_audio"].startswith("data:audio/"))
 
     async def test_stream_is_sentence_level_and_seeded_per_segment(self):
         client = FakeClient()

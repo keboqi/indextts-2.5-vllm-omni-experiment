@@ -190,15 +190,23 @@ long-document generation.
 
 The separate **Document RTF** group is the production comparison against the
 IndexTTS 2.0 parallel document path. Each non-empty line is an explicit chunk;
-the supplied Chinese workload contains exactly 32. It runs a separate
-16-request natural-duration warm-up, launches all measured chunks together,
-concatenates their WAV files in original line order, and reports:
+the supplied Chinese workload contains exactly 32. After a separate
+16-request natural-duration model warm-up, it measures four complete waves:
+
+- Inline prompt conditioning with the deep cache disabled.
+- The same inline prompt using its warmed content-addressed cache.
+- A newly uploaded named voice on its cold conditioning pass.
+- The same named voice on its warm conditioning pass.
+
+Every wave launches all chunks together, concatenates their WAV files in
+original line order, and reports:
 
 - Natural final audio duration with no target-duration control or stretching.
 - Synthesis-only and end-to-end wall time, including WAV concatenation.
 - Document aggregate RTF (`end-to-end wall seconds / final audio seconds`).
 - Audio seconds per wall second, per-chunk latency percentiles, and GPU data.
 - Every chunk WAV, the combined `document.wav`, and raw `benchmark.json`.
+- Cache counters before and after the wave from `GET /v1/audio/cache`.
 
 Use the same chunk lines, reference voice, seed, diffusion steps, and warm-up
 policy when comparing IndexTTS 2.5 with the existing 2.0 backend.
@@ -207,6 +215,16 @@ policy when comparing IndexTTS 2.5 with the existing 2.0 backend.
 
 Provides upload/list/delete controls with explicit consent metadata. Named
 voices persist in `runtime/indextts25/speakers` and are restored on restart.
+Their extracted IndexTTS conditioning is stored in
+`runtime/indextts25/cache/speaker-conditioning`, bounded to 4 GiB by default.
+Inline prompts use the same conditioning cache through a content hash, while
+`cache_prompt_audio=false` bypasses that deep cache for comparison or strict
+one-shot behavior. Emotion-audio conditioning and repeated emotion-text
+predictions are cached as well.
+
+The deployment also keeps Hugging Face, TorchInductor, Triton, and CUDA kernel
+caches below `runtime/indextts25/cache`, so restarts do not discard compilation
+work. Delete that cache directory only when intentionally forcing a cold run.
 
 ## Recommended test order
 

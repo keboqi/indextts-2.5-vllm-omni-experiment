@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -11,10 +12,27 @@ except ImportError:  # Allows contract/unit tests with an injected fake client.
     httpx = None  # type: ignore[assignment]
 
 
-def audio_reference(value: str) -> str:
+@lru_cache(maxsize=64)
+def _file_audio_reference(path_value: str, mtime_ns: int, size: int) -> str:
+    """Encode a local prompt once per file generation.
+
+    ``mtime_ns`` and ``size`` are cache-key fields, so replacing a prompt at
+    the same path cannot silently reuse stale bytes.
+    """
+    del mtime_ns, size
+    path = Path(path_value)
+    mime = mimetypes.guess_type(path.name)[0] or "audio/wav"
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def audio_reference(value: str, *, use_cache: bool = True) -> str:
     if value.startswith(("http://", "https://", "data:", "file://")):
         return value
     path = Path(value).expanduser().resolve()
+    stat = path.stat()
+    if use_cache:
+        return _file_audio_reference(str(path), stat.st_mtime_ns, stat.st_size)
     mime = mimetypes.guess_type(path.name)[0] or "audio/wav"
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:{mime};base64,{encoded}"
@@ -36,7 +54,11 @@ class OmniClient:
         try:
             response = await self._http.get("/v1/models")
             response.raise_for_status()
-            return {"ready": True, "base_url": self.base_url, "models": response.json().get("data", [])}
+            result = {"ready": True, "base_url": self.base_url, "models": response.json().get("data", [])}
+            cache_response = await self._http.get("/v1/audio/cache")
+            if cache_response.status_code == 200:
+                result["caches"] = cache_response.json()
+            return result
         except Exception as exc:
             return {"ready": False, "base_url": self.base_url, "error": str(exc)}
 

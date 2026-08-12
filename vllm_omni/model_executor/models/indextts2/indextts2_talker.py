@@ -8,11 +8,16 @@ for Stage 1 (S2Mel + BigVGAN).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import os
 import re
+import tempfile
+from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -171,6 +176,14 @@ class IndexTTS2TalkerForConditionalGeneration(nn.Module):
         self.omni_payload_at_request_end = self.config.model_type == "indextts2_5"
         self.omni_request_end_token_ids = ()
         self._speaker_cache = get_speaker_cache()
+        self._emotion_text_cache: OrderedDict[str, list[float]] = OrderedDict()
+        self._emotion_text_cache_max_entries = 256
+        speaker_cache_dir = os.environ.get("SPEAKER_CACHE_DIR")
+        self._emotion_text_cache_dir = (
+            Path(speaker_cache_dir).expanduser() / "emotion-text" if speaker_cache_dir else None
+        )
+        if self._emotion_text_cache_dir is not None:
+            self._emotion_text_cache_dir.mkdir(parents=True, exist_ok=True)
         self.gpu_resident_buffer_keys: set[tuple[str, str]] = {
             ("codes", "mel"),
             ("meta", "mel_start_offset"),
@@ -604,7 +617,11 @@ class IndexTTS2TalkerForConditionalGeneration(nn.Module):
         _speaker_cache_key = None
         _cached = None
         if _voice_name:
-            _speaker_cache_key = self._speaker_cache.make_cache_key(_voice_name, "indextts2", _voice_created_at)
+            _speaker_cache_key = self._speaker_cache.make_cache_key(
+                _voice_name,
+                str(getattr(self.config, "model_type", "indextts2")),
+                _voice_created_at,
+            )
             _cached = self._speaker_cache.get(_speaker_cache_key)
 
         # --- Load audio and extract features ---
@@ -901,7 +918,11 @@ class IndexTTS2TalkerForConditionalGeneration(nn.Module):
             _emo_cache_key = None
             _emo_cached = None
             if emo_voice_name:
-                _emo_cache_key = self._speaker_cache.make_cache_key(emo_voice_name, "indextts2_emo", 0)
+                _emo_cache_key = self._speaker_cache.make_cache_key(
+                    emo_voice_name,
+                    f"{getattr(self.config, 'model_type', 'indextts2')}_emo",
+                    0,
+                )
                 _emo_cached = self._speaker_cache.get(_emo_cache_key)
 
             if _emo_cached is not None:
@@ -948,6 +969,25 @@ class IndexTTS2TalkerForConditionalGeneration(nn.Module):
 
     def _predict_emotion_from_text(self, text: str, device: torch.device) -> list[float] | None:
         """Use QwenEmotion CausalLM to predict 8-dim emotion vector from text (aligned with official)."""
+        cache_version = os.environ.get("SPEAKER_CACHE_VERSION", "v1")
+        cache_key = hashlib.sha256(f"{cache_version}\0{self.config.model_type}\0{text}".encode()).hexdigest()
+        cached = self._emotion_text_cache.get(cache_key)
+        if cached is not None:
+            self._emotion_text_cache.move_to_end(cache_key)
+            return list(cached)
+        cache_path = (
+            self._emotion_text_cache_dir / f"{cache_key}.json" if self._emotion_text_cache_dir is not None else None
+        )
+        if cache_path is not None and cache_path.is_file():
+            try:
+                disk_value = json.loads(cache_path.read_text(encoding="utf-8"))
+                if isinstance(disk_value, list) and len(disk_value) == 8:
+                    result = [float(value) for value in disk_value]
+                    self._emotion_text_cache[cache_key] = result
+                    return list(result)
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                cache_path.unlink(missing_ok=True)
+
         model, tokenizer = load_qwen_emotion(
             self.model_path,
             device,
@@ -1006,6 +1046,30 @@ class IndexTTS2TalkerForConditionalGeneration(nn.Module):
 
         if all(v <= 0.0 for v in emo_vector):
             emo_vector[7] = 1.0  # default calm
+
+        self._emotion_text_cache[cache_key] = list(emo_vector)
+        self._emotion_text_cache.move_to_end(cache_key)
+        while len(self._emotion_text_cache) > self._emotion_text_cache_max_entries:
+            self._emotion_text_cache.popitem(last=False)
+        if cache_path is not None:
+            temporary_path: str | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    dir=cache_path.parent,
+                    suffix=".tmp",
+                    mode="w",
+                    encoding="utf-8",
+                    delete=False,
+                ) as temporary:
+                    temporary_path = temporary.name
+                    json.dump(emo_vector, temporary)
+                os.replace(temporary_path, cache_path)
+                temporary_path = None
+            except OSError as exc:
+                logger.warning("Failed to persist emotion-text cache %s: %s", cache_path, exc)
+            finally:
+                if temporary_path:
+                    Path(temporary_path).unlink(missing_ok=True)
 
         return emo_vector
 

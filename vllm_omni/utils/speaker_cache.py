@@ -6,8 +6,10 @@ has its own slot. Access via :func:`get_speaker_cache`.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import tempfile
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -229,17 +231,39 @@ def load_validated_profile_tensors(
 
 
 class SpeakerEmbeddingCache:
-    """Thread-safe in-memory LRU cache for speaker extraction artifacts."""
+    """Thread-safe memory LRU with optional persistent tensor backing."""
 
-    def __init__(self, *, max_bytes: int = _MAX_BYTES):
+    def __init__(
+        self,
+        *,
+        max_bytes: int = _MAX_BYTES,
+        disk_dir: str | os.PathLike[str] | None = None,
+        disk_max_bytes: int | None = None,
+    ):
         self._cache: OrderedDict[tuple[str, str, int], dict[str, Any]] = OrderedDict()
         self._sizes: dict[tuple[str, str, int], int] = {}
         self._total_bytes = 0
         self._lock = threading.Lock()
         self._hits = 0
         self._misses = 0
+        self._evictions = 0
+        self._disk_hits = 0
+        self._disk_writes = 0
         self._max_bytes = max_bytes
-        logger.info("Speaker cache ready (max_bytes=%d)", self._max_bytes)
+        configured_dir = disk_dir if disk_dir is not None else os.environ.get("SPEAKER_CACHE_DIR")
+        self._disk_dir = Path(configured_dir).expanduser() if configured_dir else None
+        self._disk_version = os.environ.get("SPEAKER_CACHE_VERSION", "v1")
+        if disk_max_bytes is None:
+            disk_max_bytes = int(os.environ.get("SPEAKER_CACHE_DISK_MAX_BYTES", str(4 * 1024**3)))
+        self._disk_max_bytes = max(0, int(disk_max_bytes))
+        if self._disk_dir is not None:
+            self._disk_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(
+            "Speaker cache ready (max_bytes=%d, disk_dir=%s, disk_max_bytes=%d)",
+            self._max_bytes,
+            self._disk_dir,
+            self._disk_max_bytes,
+        )
 
     @staticmethod
     def make_cache_key(speaker_name: str, model_type: str, created_at: int = 0) -> tuple[str, str, int]:
@@ -260,6 +284,12 @@ class SpeakerEmbeddingCache:
                 self._cache.move_to_end(key)
                 self._hits += 1
                 return self._cache[key]
+            disk_artifacts = self._load_disk_locked(key)
+            if disk_artifacts is not None:
+                self._disk_hits += 1
+                self._hits += 1
+                self._insert_locked(key, disk_artifacts, persist=False)
+                return self._cache.get(key)
             self._misses += 1
             return None
 
@@ -267,7 +297,13 @@ class SpeakerEmbeddingCache:
         with self._lock:
             self._insert_locked(key, artifacts)
 
-    def _insert_locked(self, key: tuple[str, str, int], artifacts: dict[str, Any]) -> None:
+    def _insert_locked(
+        self,
+        key: tuple[str, str, int],
+        artifacts: dict[str, Any],
+        *,
+        persist: bool = True,
+    ) -> None:
         size = _estimate_tensor_bytes(artifacts)
         if size > self._max_bytes:
             logger.warning("Speaker cache skip: entry %s size=%dB exceeds max_bytes=%dB", key, size, self._max_bytes)
@@ -282,7 +318,89 @@ class SpeakerEmbeddingCache:
         while self._cache and self._total_bytes > self._max_bytes:
             evict_key, _ = self._cache.popitem(last=False)
             self._total_bytes -= self._sizes.pop(evict_key, 0)
+            self._evictions += 1
             logger.debug("Speaker cache EVICT: key=%s", evict_key)
+        if persist:
+            self._save_disk_locked(key, artifacts)
+
+    def _disk_path(self, key: tuple[str, str, int]) -> Path | None:
+        if self._disk_dir is None or self._disk_max_bytes <= 0:
+            return None
+        digest = hashlib.sha256(json.dumps([self._disk_version, *key], ensure_ascii=False).encode("utf-8")).hexdigest()
+        return self._disk_dir / f"{digest}.safetensors"
+
+    def _load_disk_locked(self, key: tuple[str, str, int]) -> dict[str, Any] | None:
+        path = self._disk_path(key)
+        if path is None or not path.is_file():
+            return None
+        try:
+            from safetensors.torch import load_file
+
+            artifacts = dict(load_file(str(path), device="cpu"))
+            os.utime(path, None)
+            return artifacts
+        except Exception as exc:
+            logger.warning("Ignoring invalid speaker cache artifact %s: %s", path, exc)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+
+    def _save_disk_locked(self, key: tuple[str, str, int], artifacts: dict[str, Any]) -> None:
+        path = self._disk_path(key)
+        if path is None or path.exists() or not artifacts:
+            return
+        if not all(isinstance(value, torch.Tensor) for value in artifacts.values()):
+            return
+        # Persistent conditioning is currently intended for IndexTTS. Other
+        # adapters may cache non-portable or checkpoint-specific structures.
+        if not key[0].startswith("indextts2"):
+            return
+        temporary_path: str | None = None
+        try:
+            from safetensors.torch import save_file
+
+            with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".tmp", delete=False) as temporary:
+                temporary_path = temporary.name
+            tensors = {name: value.detach().cpu().contiguous() for name, value in artifacts.items()}
+            save_file(
+                tensors,
+                temporary_path,
+                metadata={
+                    "cache_version": self._disk_version,
+                    "model_type": key[0],
+                    "speaker_name": key[1],
+                    "created_at": str(key[2]),
+                },
+            )
+            os.replace(temporary_path, path)
+            temporary_path = None
+            self._disk_writes += 1
+            self._prune_disk_locked()
+        except Exception as exc:
+            logger.warning("Failed to persist speaker cache artifact %s: %s", path, exc)
+        finally:
+            if temporary_path:
+                try:
+                    Path(temporary_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    def _prune_disk_locked(self) -> None:
+        if self._disk_dir is None or self._disk_max_bytes <= 0:
+            return
+        files = sorted(
+            self._disk_dir.glob("*.safetensors"),
+            key=lambda item: item.stat().st_mtime_ns,
+        )
+        total = sum(item.stat().st_size for item in files)
+        for item in files:
+            if total <= self._disk_max_bytes:
+                break
+            size = item.stat().st_size
+            item.unlink(missing_ok=True)
+            total -= size
 
     def clear(self, speaker_name: str | None = None) -> int:
         """Remove entries. With a name, drops matches across model types and generations."""
@@ -294,6 +412,9 @@ class SpeakerEmbeddingCache:
                 self._total_bytes = 0
                 self._hits = 0
                 self._misses = 0
+                if self._disk_dir is not None:
+                    for path in self._disk_dir.glob("*.safetensors"):
+                        path.unlink(missing_ok=True)
                 return removed
 
             if not speaker_name or not speaker_name.strip():
@@ -305,6 +426,17 @@ class SpeakerEmbeddingCache:
                     self._total_bytes -= self._sizes.pop(k, 0)
                     del self._cache[k]
                     removed += 1
+            if self._disk_dir is not None:
+                try:
+                    from safetensors import safe_open
+
+                    for path in self._disk_dir.glob("*.safetensors"):
+                        with safe_open(str(path), framework="pt", device="cpu") as handle:
+                            metadata = handle.metadata() or {}
+                        if metadata.get("speaker_name") == normalized:
+                            path.unlink(missing_ok=True)
+                except Exception as exc:
+                    logger.warning("Failed to clear persisted speaker cache for %s: %s", normalized, exc)
             return removed
 
     def memory_bytes(self) -> int:
@@ -313,6 +445,7 @@ class SpeakerEmbeddingCache:
 
     def stats(self) -> dict[str, Any]:
         with self._lock:
+            disk_files = list(self._disk_dir.glob("*.safetensors")) if self._disk_dir is not None else []
             return {
                 "entries": len(self._cache),
                 "memory_bytes": self._total_bytes,
@@ -320,6 +453,14 @@ class SpeakerEmbeddingCache:
                 "memory_mb": round(self._total_bytes / (1024 * 1024), 2),
                 "hits": self._hits,
                 "misses": self._misses,
+                "evictions": self._evictions,
+                "disk_hits": self._disk_hits,
+                "disk_writes": self._disk_writes,
+                "disk_enabled": self._disk_dir is not None and self._disk_max_bytes > 0,
+                "disk_dir": str(self._disk_dir) if self._disk_dir is not None else None,
+                "disk_max_bytes": self._disk_max_bytes,
+                "disk_entries": len(disk_files),
+                "disk_bytes": sum(path.stat().st_size for path in disk_files),
             }
 
 

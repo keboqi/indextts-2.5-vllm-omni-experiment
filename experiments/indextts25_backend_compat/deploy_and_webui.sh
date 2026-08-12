@@ -19,7 +19,9 @@ CAMPPLUS_ID="funasr/campplus"
 BIGVGAN_ID="nvidia/bigvgan_v2_22khz_80band_256x"
 
 mkdir -p "${MODEL_DIR}" "${DATA_DIR}/logs" "${DATA_DIR}/results" \
-  "${DATA_DIR}/speakers" "${DATA_DIR}/cache"
+  "${DATA_DIR}/speakers" "${DATA_DIR}/cache" \
+  "${DATA_DIR}/cache/speaker-conditioning" "${DATA_DIR}/cache/torchinductor" \
+  "${DATA_DIR}/cache/triton" "${DATA_DIR}/cache/cuda"
 
 log() { printf '[IndexTTS-2.5] %s\n' "$*"; }
 fail() { printf '[IndexTTS-2.5] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -114,6 +116,11 @@ log "Main checkpoint and all external runtime models are ready"
 export CUDA_VISIBLE_DEVICES="${GPU_DEVICE}"
 export HF_HOME="${DATA_DIR}/cache/huggingface"
 export SPEAKER_SAMPLES_DIR="${DATA_DIR}/speakers"
+export SPEAKER_CACHE_DIR="${DATA_DIR}/cache/speaker-conditioning"
+export SPEAKER_CACHE_VERSION="indextts25-v1"
+export TORCHINDUCTOR_CACHE_DIR="${DATA_DIR}/cache/torchinductor"
+export TRITON_CACHE_DIR="${DATA_DIR}/cache/triton"
+export CUDA_CACHE_PATH="${DATA_DIR}/cache/cuda"
 export PYTHONUNBUFFERED=1
 
 API_LOG="${DATA_DIR}/logs/vllm-api.log"

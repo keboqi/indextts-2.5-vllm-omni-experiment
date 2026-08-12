@@ -169,6 +169,8 @@ class IndexTTS2Adapter(ARTTSAdapter):
 
     def _validate_extra_params(self, extras: Mapping[str, Any]) -> str | None:
         server = self.ctx.server
+        if "cache_prompt_audio" in extras and not isinstance(extras["cache_prompt_audio"], bool):
+            return "extra_params.cache_prompt_audio must be a boolean"
         if "emo_audio" in extras:
             value = extras["emo_audio"]
             if not isinstance(value, str):
@@ -246,6 +248,8 @@ class IndexTTS2Adapter(ARTTSAdapter):
     async def _build_params(self, request: OpenAICreateSpeechRequest) -> dict[str, Any]:
         server = self.ctx.server
         params: dict[str, Any] = {"text": [request.input]}
+        extras = request.extra_params if isinstance(request.extra_params, dict) else {}
+        cache_prompt_audio = bool(extras.get("cache_prompt_audio", True))
         voice_lower = request.voice.lower() if isinstance(request.voice, str) else None
         ref_audio_source = request.ref_audio
         using_uploaded_voice = False
@@ -255,17 +259,28 @@ class IndexTTS2Adapter(ARTTSAdapter):
         if ref_audio_source is not None and isinstance(ref_audio_source, str):
             wav_list, sr = await server._resolve_ref_audio(ref_audio_source)
             params["voice"] = [[wav_list, sr]]
+            if cache_prompt_audio and not using_uploaded_voice:
+                artifact_key = server._get_resolved_ref_audio_artifact_key(ref_audio_source)
+                if artifact_key:
+                    # A content-derived identity unlocks the model-side speaker
+                    # conditioning cache for inline references without treating
+                    # them as uploaded/persistent voice records.
+                    params["voice_name"] = [f"inline-{artifact_key}"]
+                    params["voice_created_at"] = [0]
         if using_uploaded_voice and voice_lower:
             params["voice_name"] = [voice_lower]
             params["voice_created_at"] = [server._voice_created_at(voice_lower)]
 
-        extras = request.extra_params if isinstance(request.extra_params, dict) else {}
         for key in _INDEXTTS2_EMOTION_KEYS:
             if key not in extras:
                 continue
             if key == "emo_audio":
                 wav_list, sr = await server._resolve_ref_audio(extras[key])
                 params[key] = [[wav_list, sr]]
+                if cache_prompt_audio:
+                    artifact_key = server._get_resolved_ref_audio_artifact_key(extras[key])
+                    if artifact_key:
+                        params["emo_voice_name"] = [f"inline-{artifact_key}"]
             else:
                 params[key] = [extras[key]]
         return params

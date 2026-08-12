@@ -39,12 +39,16 @@ class IndexTTS25Backend:
                 "lang": request.language.strip().lower() if request.language else "zh",
                 "text_normalization": True,
                 "diffusion_steps": request.diffusion_steps,
+                "cache_prompt_audio": request.cache_prompt_audio,
             }
         )
         if target_ms and request.duration_control != "ffmpeg":
             extras["target_duration_ms"] = target_ms
         if request.emotion_audio:
-            extras["emo_audio"] = audio_reference(request.emotion_audio)
+            extras["emo_audio"] = audio_reference(
+                request.emotion_audio,
+                use_cache=request.cache_prompt_audio,
+            )
         if request.emotion_vector is not None:
             extras["emo_vector"] = list(request.emotion_vector)
         if request.emotion_text:
@@ -66,7 +70,10 @@ class IndexTTS25Backend:
         if request.seed is not None:
             payload["seed"] = request.seed
         if request.prompt_audio:
-            payload["ref_audio"] = audio_reference(request.prompt_audio)
+            payload["ref_audio"] = audio_reference(
+                request.prompt_audio,
+                use_cache=request.cache_prompt_audio,
+            )
         else:
             payload["voice"] = request.speaker_preset
         if request.reference_text:
@@ -86,9 +93,7 @@ class IndexTTS25Backend:
         duration: int,
     ) -> bytes:
         async with self._segment_slots:
-            return await self.client.synthesize(
-                self.build_payload(request, text=text, target_ms=duration)
-            )
+            return await self.client.synthesize(self.build_payload(request, text=text, target_ms=duration))
 
     async def synthesize(self, request: SynthesisRequest) -> Path:
         texts, durations = await self._segments(request)
@@ -118,11 +123,7 @@ class IndexTTS25Backend:
         tasks = []
         for index, (text, duration) in enumerate(zip(texts, durations)):
             segment_request = replace(request, seed=None if request.seed is None else request.seed + index)
-            tasks.append(
-                asyncio.create_task(
-                    self._synthesize_segment(segment_request, text, duration)
-                )
-            )
+            tasks.append(asyncio.create_task(self._synthesize_segment(segment_request, text, duration)))
         try:
             for task, duration in zip(tasks, durations):
                 chunk = await task

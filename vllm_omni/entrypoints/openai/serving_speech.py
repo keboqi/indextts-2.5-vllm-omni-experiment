@@ -304,6 +304,10 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
         self._ref_audio_resolve_cache_bytes = 0
         self._ref_audio_resolve_cache_max_entries = _REF_AUDIO_RESOLVE_CACHE_MAX_ENTRIES
         self._ref_audio_resolve_cache_max_bytes = _REF_AUDIO_RESOLVE_CACHE_MAX_BYTES
+        self._ref_audio_resolve_inflight: dict[str, asyncio.Task[tuple[list[float], int]]] = {}
+        self._ref_audio_resolve_hits = 0
+        self._ref_audio_resolve_misses = 0
+        self._ref_audio_resolve_inflight_waits = 0
         # Readiness is keyed by (artifact_key, x_vector_only). An x-vector-only
         # request caches a speaker embedding but no ref_code, so its artifact
         # must not satisfy a later ICL request that needs ref_code (#5049).
@@ -1904,6 +1908,7 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
         cache_key = hashlib.sha1(ref_audio_str.encode("utf-8")).hexdigest()
         cached = self._ref_audio_resolve_cache.get(cache_key)
         if cached is not None:
+            self._ref_audio_resolve_hits += 1
             self._ref_audio_resolve_cache.move_to_end(cache_key)
             wav_list, sr, _, _ = cached
             logger.debug(
@@ -1913,6 +1918,25 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
                 len(wav_list) / sr if sr > 0 else 0.0,
             )
             return wav_list, sr
+
+        inflight = self._ref_audio_resolve_inflight.get(cache_key)
+        if inflight is not None:
+            self._ref_audio_resolve_inflight_waits += 1
+            return await asyncio.shield(inflight)
+
+        self._ref_audio_resolve_misses += 1
+        task = asyncio.create_task(self._fetch_ref_audio(ref_audio_str, cache_key))
+        self._ref_audio_resolve_inflight[cache_key] = task
+
+        def _remove_inflight(done: asyncio.Task[tuple[list[float], int]]) -> None:
+            if self._ref_audio_resolve_inflight.get(cache_key) is done:
+                self._ref_audio_resolve_inflight.pop(cache_key, None)
+
+        task.add_done_callback(_remove_inflight)
+        return await asyncio.shield(task)
+
+    async def _fetch_ref_audio(self, ref_audio_str: str, cache_key: str) -> tuple[list[float], int]:
+        """Fetch/decode one cold reference for all concurrent waiters."""
 
         # In diffusion mode, model_config may not be available
         if self._diffusion_mode:
@@ -1955,6 +1979,22 @@ class OmniOpenAIServingSpeech(OpenAIServing, AudioMixin):
         )
         self._put_resolved_ref_audio(cache_key, wav_list, sr, artifact_key)
         return wav_list, sr
+
+    def cache_stats(self) -> dict[str, Any]:
+        """Return operational cache counters for status UIs and benchmarks."""
+        return {
+            "reference_audio": {
+                "entries": len(self._ref_audio_resolve_cache),
+                "memory_bytes": self._ref_audio_resolve_cache_bytes,
+                "max_entries": self._ref_audio_resolve_cache_max_entries,
+                "max_bytes": self._ref_audio_resolve_cache_max_bytes,
+                "hits": self._ref_audio_resolve_hits,
+                "misses": self._ref_audio_resolve_misses,
+                "inflight_waits": self._ref_audio_resolve_inflight_waits,
+                "inflight": len(self._ref_audio_resolve_inflight),
+            },
+            "speaker_conditioning": self._speaker_cache.stats(),
+        }
 
     @staticmethod
     def _make_ref_audio_artifact_cache_key(wav: np.ndarray, sr: int) -> str:

@@ -188,6 +188,7 @@ def make_request(
     emotion_weight: float = 0.6,
     emotion_vector: list[float] | None = None,
     random_emotion: bool = False,
+    cache_prompt_audio: bool = True,
     seed: int | None = 42,
     sampling: dict[str, Any] | None = None,
 ) -> SynthesisRequest:
@@ -207,6 +208,7 @@ def make_request(
         emotion_weight=emotion_weight,
         emotion_vector=emotion_vector,
         random_emotion=random_emotion,
+        cache_prompt_audio=cache_prompt_audio,
         seed=seed,
         sampling=sampling or {},
     )
@@ -353,7 +355,9 @@ async def run_benchmark_batch(
     backend: IndexTTS25Backend,
     *,
     output_dir: Path,
-    reference: str,
+    reference: str | None,
+    voice: str | None = None,
+    cache_prompt_audio: bool = True,
     concurrency: int,
     request_count: int,
     profile: str,
@@ -403,10 +407,11 @@ async def run_benchmark_batch(
                         ),
                         output=output,
                         reference=reference,
-                        voice=None,
+                        voice=voice,
                         language=language,
                         target_ms=request_target,
                         diffusion_steps=request_steps,
+                        cache_prompt_audio=cache_prompt_audio,
                         seed=seed + index,
                     )
                 )
@@ -446,7 +451,7 @@ async def run_document_benchmark(
     silence_ms: int,
     seed: int,
 ) -> None:
-    """Measure one natural-duration parallel document wave end to end."""
+    """Compare uncached, inline-cached, and named-voice document waves."""
     document_dir = run_dir / "document-benchmark"
     warmup_texts = texts[: min(16, len(texts))]
     async with GPUSampler() as warmup_gpu:
@@ -463,82 +468,145 @@ async def run_document_benchmark(
             texts=warmup_texts,
             language="zh",
         )
-
-    document_started = time.perf_counter()
-    async with GPUSampler() as measured_gpu:
-        results, synthesis_wall_s = await run_benchmark_batch(
-            backend,
-            output_dir=document_dir / "chunks",
-            reference=reference,
-            concurrency=len(texts),
-            request_count=len(texts),
-            profile="fixed",
-            target_ms=0,
-            diffusion_steps=diffusion_steps,
-            seed=seed + 3_000_000,
-            texts=texts,
-            language="zh",
-        )
-
-        failed = [result for result in results if result.get("status") != "pass"]
-        document_output = document_dir / "document.wav"
-        document_info: dict[str, Any] | None = None
-        if not failed:
-            ordered_chunks = [Path(str(result["output"])).read_bytes() for result in results]
-            document_output.write_bytes(join_wav(ordered_chunks, silence_ms=silence_ms))
-            document_info = wav_info(document_output)
-        end_to_end_wall_s = time.perf_counter() - document_started
-
-    metrics = summarize_concurrency_results(results, wall_s=end_to_end_wall_s)
-    if document_info is not None:
-        final_audio_s = float(document_info["duration_ms"]) / 1000.0
-        metrics.update(
-            total_audio_s=round(final_audio_s, 3),
-            audio_s_per_wall_s=round(final_audio_s / end_to_end_wall_s, 3),
-            aggregate_rtf=round(end_to_end_wall_s / final_audio_s, 4),
-        )
-    gpu_metrics = summarize_gpu_samples(measured_gpu.samples)
     warmup_gpu_metrics = summarize_gpu_samples(warmup_gpu.samples)
-    detail = {
-        "language": "zh",
-        "natural_duration": True,
-        "chunk_count": len(texts),
-        "chunks": texts,
-        "diffusion_steps": diffusion_steps,
-        "silence_ms": silence_ms,
-        "warmup_request_count": len(warmup_texts),
-        "warmup_wall_s": round(warmup_wall_s, 3),
-        "warmup_results": warmup_results,
-        "warmup_gpu_samples": warmup_gpu.samples,
-        "warmup_gpu_summary": warmup_gpu_metrics,
-        "synthesis_wall_s": round(synthesis_wall_s, 3),
-        "end_to_end_wall_s": round(end_to_end_wall_s, 3),
-        "measured_results": results,
-        "measured_gpu_samples": measured_gpu.samples,
-        "measured_gpu_summary": gpu_metrics,
-        "summary": metrics,
-        "output": str(document_output) if not failed else None,
-    }
-    detail_path = document_dir / "benchmark.json"
-    detail_path.write_text(json.dumps(detail, indent=2, ensure_ascii=False), encoding="utf-8")
-    recorder.rows.append(
-        {
-            "label": "document-natural-parallel",
-            "group": "document_benchmark",
-            "status": "pass" if not failed else "fail",
+
+    async def measure_mode(
+        mode: str,
+        *,
+        mode_reference: str | None,
+        voice: str | None,
+        cache_prompt_audio: bool,
+        seed_offset: int,
+        cold: bool,
+    ) -> None:
+        mode_dir = document_dir / mode
+        cache_before = await backend.status()
+        document_started = time.perf_counter()
+        async with GPUSampler() as measured_gpu:
+            results, synthesis_wall_s = await run_benchmark_batch(
+                backend,
+                output_dir=mode_dir / "chunks",
+                reference=mode_reference,
+                voice=voice,
+                cache_prompt_audio=cache_prompt_audio,
+                concurrency=len(texts),
+                request_count=len(texts),
+                profile="fixed",
+                target_ms=0,
+                diffusion_steps=diffusion_steps,
+                seed=seed + seed_offset,
+                texts=texts,
+                language="zh",
+            )
+            failed = [result for result in results if result.get("status") != "pass"]
+            document_output = mode_dir / "document.wav"
+            document_info: dict[str, Any] | None = None
+            if not failed:
+                ordered_chunks = [Path(str(result["output"])).read_bytes() for result in results]
+                document_output.write_bytes(join_wav(ordered_chunks, silence_ms=silence_ms))
+                document_info = wav_info(document_output)
+            end_to_end_wall_s = time.perf_counter() - document_started
+
+        cache_after = await backend.status()
+        metrics = summarize_concurrency_results(results, wall_s=end_to_end_wall_s)
+        if document_info is not None:
+            final_audio_s = float(document_info["duration_ms"]) / 1000.0
+            metrics.update(
+                total_audio_s=round(final_audio_s, 3),
+                audio_s_per_wall_s=round(final_audio_s / end_to_end_wall_s, 3),
+                aggregate_rtf=round(end_to_end_wall_s / final_audio_s, 4),
+            )
+        gpu_metrics = summarize_gpu_samples(measured_gpu.samples)
+        detail = {
+            "mode": mode,
+            "cold": cold,
+            "cache_prompt_audio": cache_prompt_audio,
+            "voice": voice,
             "language": "zh",
             "natural_duration": True,
-            "rtf_scope": "final-natural-document",
             "chunk_count": len(texts),
+            "chunks": texts,
+            "diffusion_steps": diffusion_steps,
+            "silence_ms": silence_ms,
+            "cache_before": cache_before.get("caches"),
+            "cache_after": cache_after.get("caches"),
+            "synthesis_wall_s": round(synthesis_wall_s, 3),
+            "end_to_end_wall_s": round(end_to_end_wall_s, 3),
+            "measured_results": results,
+            "measured_gpu_samples": measured_gpu.samples,
+            "measured_gpu_summary": gpu_metrics,
+            "summary": metrics,
+            "output": str(document_output) if not failed else None,
+        }
+        detail_path = mode_dir / "benchmark.json"
+        detail_path.write_text(json.dumps(detail, indent=2, ensure_ascii=False), encoding="utf-8")
+        recorder.rows.append(
+            {
+                "label": f"document-{mode}",
+                "group": "document_benchmark",
+                "status": "pass" if not failed else "fail",
+                "cache_mode": mode,
+                "cold": cold,
+                "language": "zh",
+                "natural_duration": True,
+                "rtf_scope": "final-natural-document",
+                "chunk_count": len(texts),
+                "synthesis_wall_s": round(synthesis_wall_s, 3),
+                **metrics,
+                **gpu_metrics,
+                "silence_ms": silence_ms,
+                "output": str(document_output) if not failed else None,
+                "details": str(detail_path),
+            }
+        )
+
+    await measure_mode(
+        "inline-uncached",
+        mode_reference=reference,
+        voice=None,
+        cache_prompt_audio=False,
+        seed_offset=3_000_000,
+        cold=True,
+    )
+    await measure_mode(
+        "inline-warm",
+        mode_reference=reference,
+        voice=None,
+        cache_prompt_audio=True,
+        seed_offset=4_000_000,
+        cold=False,
+    )
+
+    voice_name = f"document-cache-{uuid.uuid4().hex[:8]}"
+    await backend.add_speaker(voice_name, reference)
+    try:
+        await measure_mode(
+            "named-cold",
+            mode_reference=None,
+            voice=voice_name,
+            cache_prompt_audio=True,
+            seed_offset=5_000_000,
+            cold=True,
+        )
+        await measure_mode(
+            "named-warm",
+            mode_reference=None,
+            voice=voice_name,
+            cache_prompt_audio=True,
+            seed_offset=6_000_000,
+            cold=False,
+        )
+    finally:
+        await backend.delete_speaker(voice_name)
+
+    recorder.rows.append(
+        {
+            "label": "document-cache-warmup",
+            "group": "document_benchmark_warmup",
+            "status": "pass" if all(row.get("status") == "pass" for row in warmup_results) else "fail",
             "warmup_request_count": len(warmup_texts),
             "warmup_wall_s": round(warmup_wall_s, 3),
-            "warmup_failures": sum(row.get("status") != "pass" for row in warmup_results),
-            "synthesis_wall_s": round(synthesis_wall_s, 3),
-            **metrics,
-            **gpu_metrics,
-            "silence_ms": silence_ms,
-            "output": str(document_output) if not failed else None,
-            "details": str(detail_path),
+            "warmup_gpu_summary": warmup_gpu_metrics,
         }
     )
 
@@ -988,13 +1056,13 @@ async def run_suite(
     document_table = ""
     if document_rows:
         document_table = (
-            "\n\n### Natural-duration document benchmark\n\n"
-            "| Chunks | Final audio s | End-to-end s | Aggregate RTF | Audio s/s | p95 | GPU avg |\n"
-            "|---:|---:|---:|---:|---:|---:|---:|\n"
+            "\n\n### Natural-duration document cache benchmark\n\n"
+            "| Cache mode | Chunks | Final audio s | End-to-end s | Aggregate RTF | Audio s/s | p95 | GPU avg |\n"
+            "|---|---:|---:|---:|---:|---:|---:|---:|\n"
         )
         for row in document_rows:
             document_table += (
-                f"| {row['chunk_count']} | {row.get('total_audio_s')} | {row.get('wall_s')} "
+                f"| {row.get('cache_mode')} | {row['chunk_count']} | {row.get('total_audio_s')} | {row.get('wall_s')} "
                 f"| {row.get('aggregate_rtf')} | {row.get('audio_s_per_wall_s')} "
                 f"| {row.get('latency_p95_s')} | {row.get('gpu_utilization_avg_percent')}% |\n"
             )
