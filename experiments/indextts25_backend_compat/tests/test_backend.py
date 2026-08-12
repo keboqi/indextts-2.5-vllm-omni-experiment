@@ -168,6 +168,7 @@ class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
         deploy_config = (repo_root / "vllm_omni" / "deploy" / "indextts2_5.yaml").read_text(encoding="utf-8")
         self.assertEqual(deploy_config.count("max_num_seqs: 32"), 1)
         self.assertEqual(deploy_config.count("max_num_seqs: 16"), 1)
+        self.assertEqual(deploy_config.count("gpu_memory_utilization: 0.3"), 2)
         self.assertEqual(deploy_config.count("s2mel_cfm_batch_size: 16"), 1)
         self.assertEqual(deploy_config.count("s2mel_vocoder_torch_compile: true"), 1)
 

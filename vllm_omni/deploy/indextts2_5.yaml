@@ -17,7 +17,7 @@ stages:
     # Triton matches the native GPT-2 logits for this non-RoPE model.
     # FlashInfer produces materially different semantic-token logits.
     attention_backend: TRITON_ATTN
-    gpu_memory_utilization: 0.4
+    gpu_memory_utilization: 0.3
     enable_prefix_caching: false
     enable_chunked_prefill: false
     skip_tokenizer_init: true
@@ -44,7 +44,7 @@ stages:
     # effective estimator batch. The 96 GB target GPU has enough measured
     # headroom for 16 requests (effective DiT batch up to 32).
     max_num_seqs: 16
-    gpu_memory_utilization: 0.4
+    gpu_memory_utilization: 0.3
     enable_prefix_caching: false
     skip_tokenizer_init: true
     enforce_eager: true
