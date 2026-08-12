@@ -115,8 +115,9 @@ class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
         repo_root = Path(__file__).resolve().parents[3]
         deploy_config = (repo_root / "vllm_omni" / "deploy" / "indextts2_5.yaml").read_text(encoding="utf-8")
         self.assertEqual(deploy_config.count("max_num_seqs: 32"), 1)
-        self.assertEqual(deploy_config.count("max_num_seqs: 8"), 1)
-        self.assertEqual(deploy_config.count("s2mel_cfm_batch_size: 8"), 1)
+        self.assertEqual(deploy_config.count("max_num_seqs: 16"), 1)
+        self.assertEqual(deploy_config.count("s2mel_cfm_batch_size: 16"), 1)
+        self.assertEqual(deploy_config.count("s2mel_vocoder_torch_compile: true"), 1)
 
         backend = IndexTTS25Backend(FakeClient())  # type: ignore[arg-type]
         self.assertEqual(backend._segment_slots._value, 100)

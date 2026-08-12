@@ -150,10 +150,21 @@ for word omissions, unnatural pacing, speaker drift, emotion drift, clipping,
 silence, and discontinuities between independently generated sentences.
 
 The default high-throughput profile admits up to 100 requests while bounding
-the physical GPU work at 32 Stage 0 sequences, 8 Stage 1 sequences, and an
-8-request CFM microbatch. Admission capacity is intentionally larger than the
+the physical GPU work at 32 Stage 0 sequences, 16 Stage 1 sequences, and a
+16-request CFM microbatch (an effective DiT estimator batch up to 32 under
+classifier-free guidance). Admission capacity is intentionally larger than the
 memory-intensive decoder batch: excess work remains queued in vLLM instead of
 turning a burst of 100 requests into an effective 200-item CFG DiT batch.
+
+Stage 1 uses dynamic `torch.compile` for the DiT estimator and the full
+BigVGAN forward. BigVGAN's Snake/SnakeBeta activation also keeps its default
+JIT-compiled fused Triton kernel; the full-forward compile is an additional
+optimization around that existing compiled activation path. The decoder groups
+equal-length mel outputs into true BigVGAN batches and then restores request
+order. Different lengths remain separate groups, avoiding zero-padding leakage
+into waveform tails. Bucketed vocoder CUDA graphs remain disabled because they
+are mutually exclusive with this exact-length compiled path and require
+separate WER/speaker-similarity validation.
 
 The concurrency benchmark defaults to levels 4, 8, 16, 32, 64, and 100 with
 100 measured requests at every level. Before measurement, each level runs a

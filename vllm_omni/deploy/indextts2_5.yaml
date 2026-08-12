@@ -41,8 +41,9 @@ stages:
       detokenize: false
   - stage_id: 1
     # Stage 1 carries length-dependent DiT activations and CFG doubles its
-    # effective estimator batch, so use a smaller bound than Stage 0.
-    max_num_seqs: 8
+    # effective estimator batch. The 96 GB target GPU has enough measured
+    # headroom for 16 requests (effective DiT batch up to 32).
+    max_num_seqs: 16
     gpu_memory_utilization: 0.4
     enable_prefix_caching: false
     skip_tokenizer_init: true
@@ -57,12 +58,14 @@ stages:
       use_gpt_latent: false
       diffusion_steps: 25
       s2mel_dit_bf16: true
-      s2mel_cfm_batch_size: 8
+      s2mel_cfm_batch_size: 16
       inference_cfg_rate: 0.7
       s2mel_dit_cuda_graph: false
       s2mel_dit_torch_compile: true
       s2mel_dit_torch_compile_mode: default
-      s2mel_vocoder_torch_compile: false
+      # Full-forward dynamic compile layers on top of BigVGAN's default fused
+      # Triton Snake kernel. Equal-length mels are batched before this call.
+      s2mel_vocoder_torch_compile: true
     default_sampling_params:
       temperature: 0.0
       max_tokens: 32767

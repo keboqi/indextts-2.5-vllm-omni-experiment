@@ -1348,18 +1348,55 @@ class IndexTTS2S2MelDecoder(nn.Module):
         vocode: Any,
         voc_dtype: torch.dtype,
     ) -> list[torch.Tensor]:
-        """Vocode each already-cropped request at its exact mel length."""
-        wavs: list[torch.Tensor] = []
-        for mel in mels:
+        """Batch equal-length mels and restore exact request order.
+
+        BigVGAN accepts a real batch dimension, but differently sized mels
+        cannot be stacked without padding that can leak into the waveform
+        tail. Grouping by exact frame count provides fused vocoder execution
+        while preserving the existing exact-length audio contract.
+        """
+        normalized: list[torch.Tensor] = []
+        groups: dict[int, list[int]] = {}
+        for index, mel in enumerate(mels):
             if mel.ndim == 2:
-                mel_input = mel.unsqueeze(0)
-            elif mel.ndim == 3 and mel.shape[0] == 1:
                 mel_input = mel
+            elif mel.ndim == 3 and mel.shape[0] == 1:
+                mel_input = mel.squeeze(0)
             else:
                 raise ValueError(f"IndexTTS BigVGAN expects one mel per request, got {tuple(mel.shape)}")
-            wav = vocode(mel_input.to(voc_dtype)).float().squeeze(0).squeeze(0)
-            wavs.append(torch.clamp(wav, -1.0, 1.0))
-        return wavs
+            normalized.append(mel_input)
+            groups.setdefault(int(mel_input.shape[-1]), []).append(index)
+
+        outputs: list[torch.Tensor | None] = [None] * len(normalized)
+        batch_sizes: list[int] = []
+        for frame_count, indices in groups.items():
+            mel_batch = torch.stack([normalized[index] for index in indices]).to(voc_dtype)
+            wav_batch = vocode(mel_batch).float()
+            if wav_batch.ndim == 2:
+                wav_batch = wav_batch.unsqueeze(1)
+            if wav_batch.ndim != 3 or wav_batch.shape[0] != len(indices):
+                raise ValueError(
+                    "IndexTTS BigVGAN output batch mismatch: "
+                    f"input_batch={len(indices)} output_shape={tuple(wav_batch.shape)}"
+                )
+            batch_sizes.append(len(indices))
+            for row, index in enumerate(indices):
+                outputs[index] = torch.clamp(wav_batch[row].squeeze(0), -1.0, 1.0)
+            logger.debug(
+                "[S2Mel] BigVGAN exact-length batch: requests=%d frames=%d",
+                len(indices),
+                frame_count,
+            )
+
+        if any(output is None for output in outputs):
+            raise RuntimeError("IndexTTS BigVGAN failed to produce every request output")
+        logger.info(
+            "[S2Mel] BigVGAN vocoded %d request(s) in %d exact-length batch(es); group_sizes=%s",
+            len(normalized),
+            len(groups),
+            batch_sizes,
+        )
+        return [output for output in outputs if output is not None]
 
     def _get_vocoder_runner(
         self,

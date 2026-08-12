@@ -1040,13 +1040,13 @@ def test_vocoder_torch_compile_is_cached_and_preserves_exact_lengths(monkeypatch
     }
 
 
-def test_bigvgan_vocodes_cropped_mels_one_request_at_a_time_in_order():
+def test_bigvgan_batches_equal_length_cropped_mels_and_restores_order():
     decoder = object.__new__(IndexTTS2S2MelDecoder)
     vocoder = _OrderRecordingBigVGAN()
     mels = [
         torch.full((2, 3), 0.1),
         torch.full((2, 2), 0.2),
-        torch.full((2, 4), 0.3),
+        torch.full((2, 3), 0.3),
     ]
 
     wavs = decoder._vocode_mels(
@@ -1055,9 +1055,9 @@ def test_bigvgan_vocodes_cropped_mels_one_request_at_a_time_in_order():
         voc_dtype=torch.float32,
     )
 
-    assert [length for length, _ in vocoder.calls] == [3, 2, 4]
-    assert [marker for _, marker in vocoder.calls] == pytest.approx([0.1, 0.2, 0.3])
-    assert [tuple(wav.shape) for wav in wavs] == [(12,), (8,), (16,)]
+    assert [length for length, _ in vocoder.calls] == [3, 2]
+    assert [marker for _, marker in vocoder.calls] == pytest.approx([0.1, 0.2])
+    assert [tuple(wav.shape) for wav in wavs] == [(12,), (8,), (12,)]
     assert [float(wav[0]) for wav in wavs] == pytest.approx([0.1, 0.2, 0.3])
 
 
@@ -1089,7 +1089,7 @@ def test_v25_recipe_enables_dynamic_dit_compile(recipe_name):
     assert overrides["s2mel_dit_bf16"] is True
     assert overrides["s2mel_dit_torch_compile"] is True
     assert overrides.get("s2mel_dit_torch_compile_mode") == "default"
-    assert overrides.get("s2mel_vocoder_torch_compile") is False
+    assert overrides.get("s2mel_vocoder_torch_compile") is True
     assert overrides.get("s2mel_vocoder_cuda_graph", False) is False
 
 
