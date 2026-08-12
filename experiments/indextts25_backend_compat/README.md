@@ -34,7 +34,8 @@ prosody must be benchmarked separately from the current 2.0 implementation.
 | Prompt-audio voice cloning | Implemented with data URLs |
 | Named speaker presets | Implemented with Omni voice CRUD |
 | Sentence splitting / max input tokens | Implemented conservatively |
-| Parallel segment requests | Implemented with a configurable semaphore (default 4) |
+| Parallel segment requests | Implemented with a configurable semaphore (default 100) |
+| Natural document benchmark | 32 parallel Chinese chunks, ordered assembly, final-file aggregate RTF |
 | Inter-sentence silence | Implemented for final WAV |
 | Sentence-level streaming | Implemented; explicitly not native |
 | Language selection | Chinese (`zh`), English (`en`), Japanese (`ja`), Spanish (`es`), and Arabic (`ar`); defaults to Chinese |

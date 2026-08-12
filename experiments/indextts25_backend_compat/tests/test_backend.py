@@ -12,9 +12,8 @@ from indextts25_compat.backend import IndexTTS25Backend
 from indextts25_compat.benchmark import percentile, summarize_concurrency_results, summarize_gpu_samples
 from indextts25_compat.client import OmniClient
 from indextts25_compat.models import SUPPORTED_LANGUAGES, SynthesisRequest
-from indextts25_compat.text import allocate_durations, clean_text, split_text
-
 from indextts25_compat.patch_flashinfer import NEW_ANNOTATION, OLD_ANNOTATION, patch_file
+from indextts25_compat.text import allocate_durations, clean_text, parse_document_chunks, split_text
 
 
 def wav_bytes(frames: int = 2205) -> bytes:
@@ -66,6 +65,12 @@ class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(clean_text(None), "")
         self.assertEqual(clean_text("  hello  "), "hello")
 
+    def test_document_chunks_preserve_explicit_order(self):
+        self.assertEqual(
+            parse_document_chunks(" 第一段。\n\n第二段。 \n 第三段。"),
+            ["第一段。", "第二段。", "第三段。"],
+        )
+
     def test_release_language_contract_and_chinese_default(self):
         self.assertEqual(SUPPORTED_LANGUAGES, ("zh", "en", "ja", "es", "ar"))
         backend = IndexTTS25Backend(FakeClient())  # type: ignore[arg-type]
@@ -116,8 +121,14 @@ class CompatibilityTests(unittest.IsolatedAsyncioTestCase):
         experiment_dir = Path(__file__).resolve().parents[1]
         webui = (experiment_dir / "webui.py").read_text(encoding="utf-8")
         self.assertIn('value="4,8,16,32,64,100"', webui)
-        self.assertIn('value=100,\n                        step=1,\n                        label="Measured requests per level"', webui)
+        self.assertIn(
+            'value=100,\n                        step=1,\n                        label="Measured requests per level"',
+            webui,
+        )
         self.assertIn('group": "concurrency_benchmark"', webui)
+        self.assertIn('group": "document_benchmark"', webui)
+        self.assertIn('"natural_duration": True', webui)
+        self.assertIn("value=DEFAULT_DOCUMENT_CHUNKS", webui)
 
     def test_deployment_bundles_all_external_runtime_models(self):
         experiment_dir = Path(__file__).resolve().parents[1]

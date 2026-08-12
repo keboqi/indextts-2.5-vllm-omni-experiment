@@ -140,6 +140,8 @@ Selectable groups include:
 - Diffusion-step quality/latency sweep.
 - Neutral, emotion-text, and emotion-vector comparisons.
 - Concurrent capacity sweep with separate fixed and mixed workloads.
+- Natural-duration document benchmark with 32 parallel Chinese chunks,
+  ordered concatenation, and end-to-end aggregate RTF.
 - Ordered sentence-level compatibility streaming with chunk-arrival timing.
 - Repeated-inference VRAM stability sampling.
 - Temporary named-voice upload, synthesis, listing, and deletion.
@@ -182,7 +184,24 @@ compilation costs are reported separately. Its summary includes:
 The `fixed` workload holds duration and diffusion steps constant to maximize
 batch compatibility. The `mixed` workload rotates durations from 2.0 to 3.5
 seconds and diffusion steps 10, 15, 25, and 40 to expose real-world batch
-fragmentation. Run both before selecting production limits.
+fragmentation. Because both modes force output durations, their aggregate RTF
+describes those emitted files and must not be used to estimate unconstrained
+long-document generation.
+
+The separate **Document RTF** group is the production comparison against the
+IndexTTS 2.0 parallel document path. Each non-empty line is an explicit chunk;
+the supplied Chinese workload contains exactly 32. It runs a separate
+16-request natural-duration warm-up, launches all measured chunks together,
+concatenates their WAV files in original line order, and reports:
+
+- Natural final audio duration with no target-duration control or stretching.
+- Synthesis-only and end-to-end wall time, including WAV concatenation.
+- Document aggregate RTF (`end-to-end wall seconds / final audio seconds`).
+- Audio seconds per wall second, per-chunk latency percentiles, and GPU data.
+- Every chunk WAV, the combined `document.wav`, and raw `benchmark.json`.
+
+Use the same chunk lines, reference voice, seed, diffusion steps, and warm-up
+policy when comparing IndexTTS 2.5 with the existing 2.0 backend.
 
 ### Named voices
 
@@ -193,7 +212,7 @@ voices persist in `runtime/indextts25/speakers` and are restored on restart.
 
 1. Open **Server status** and verify the model and RTX PRO 6000 are visible.
 2. Generate one English and one Mandarin clip in **Single synthesis**.
-3. Run the default fixed-workload concurrency sweep and ten stability
+3. Run the default fixed-workload concurrency sweep, Document RTF, and ten stability
    repetitions. For a quicker functional check, use levels `4,8` and 16
    measured requests per level.
 4. Download and listen to the complete ZIP.

@@ -10,6 +10,11 @@ def clean_text(value: str | None) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def parse_document_chunks(value: str | None) -> list[str]:
+    """Parse an explicit, ordered document plan with one chunk per line."""
+    return [line.strip() for line in clean_text(value).splitlines() if line.strip()]
+
+
 def split_text(text: str, max_tokens: int) -> list[str]:
     """Split conservatively without rewriting IndexTTS pronunciation markup."""
     text = text.strip()

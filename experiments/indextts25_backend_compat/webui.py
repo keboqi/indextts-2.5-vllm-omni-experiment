@@ -13,10 +13,10 @@ from pathlib import Path
 from typing import Any
 
 import gradio as gr
-
-from indextts25_compat import IndexTTS25Backend, OmniClient, SUPPORTED_LANGUAGES, SynthesisRequest
+from indextts25_compat import SUPPORTED_LANGUAGES, IndexTTS25Backend, OmniClient, SynthesisRequest
+from indextts25_compat.audio import join_wav
 from indextts25_compat.benchmark import summarize_concurrency_results, summarize_gpu_samples
-from indextts25_compat.text import clean_text
+from indextts25_compat.text import clean_text, parse_document_chunks
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,10 +46,44 @@ TEST_CHOICES = [
     "Diffusion steps",
     "Emotion",
     "Concurrency benchmark",
+    "Document RTF",
     "Compatibility streaming",
     "Stability",
     "Named voice",
 ]
+
+DEFAULT_DOCUMENT_CHUNKS = """这是第一段自然语速的中文测试，用来测量长文本并行合成性能。
+清晨的阳光穿过窗帘，房间里逐渐变得明亮而温暖。
+我们将完整文章拆分成多个语义连贯的片段，并同时提交给服务器。
+每个片段都保持自然时长，不使用目标时长压缩或后期拉伸。
+测试会记录从全部请求发出到最终音频拼接完成所经过的时间。
+最终的实时率使用完整音频时长作为分母，因此可以直接比较生产效率。
+在高并发场景中，调度器需要平衡生成速度、显存占用和尾部延迟。
+语义编码阶段负责理解文本内容，并生成后续声学模型需要的表示。
+扩散模型把这些表示转换成细致稳定的梅尔频谱。
+声码器随后恢复最终波形，并尽量保留参考说话人的音色特征。
+如果所有阶段都形成真正的批处理，显卡利用率应该明显提高。
+如果某个阶段逐条执行，整体速度就会受到串行瓶颈限制。
+不同长度的句子也可能造成批次碎片，从而降低实际吞吐量。
+因此这组文本故意保留了一定的长度变化，更接近真实文章。
+测试结果除了实时率之外，还会包含请求延迟和显卡功耗信息。
+我们需要关注中位延迟，也需要检查最慢片段何时完成。
+最终文档只有在所有片段都生成后，才能按照原始顺序拼接。
+拼接本身通常很快，但仍然计入端到端耗时。
+参考音频只负责提供说话人特征，不应该改变目标文本的语言。
+本次测试默认使用中文，因为中文是实验界面的默认语言。
+合成结果需要人工检查漏字、重复、停顿、语速和情感漂移。
+精确的文件长度并不能单独证明语音内容完整或自然。
+性能测试也必须在模型完成预热和编译之后再进行记录。
+预热耗时会单独保存，避免与稳定运行时的指标混在一起。
+三十二个片段会作为一个并行文档批次同时进入后端。
+阶段零最多处理三十二个序列，阶段一则保持更保守的批量上限。
+这种配置应该在吞吐量和显存安全余量之间取得合理平衡。
+如果吞吐量没有达到旧版后端水平，日志将帮助定位具体阶段。
+我们还会保存每个片段的自然音频，方便逐条试听和复现问题。
+最终合并文件可以直接用于计算整篇文章的音频总时长。
+同一份测试文本也应在旧版后端运行，以完成公平的横向比较。
+这是第三十二个片段，生成完成后就可以得到文档级实时率。"""
 
 
 def unique_run_dir(prefix: str) -> Path:
@@ -326,7 +360,11 @@ async def run_benchmark_batch(
     target_ms: int,
     diffusion_steps: int,
     seed: int,
+    texts: list[str] | None = None,
+    language: str = "en",
 ) -> tuple[list[dict[str, Any]], float]:
+    if texts is not None and len(texts) != request_count:
+        raise ValueError(f"benchmark text/request mismatch: texts={len(texts)} requests={request_count}")
     output_dir.mkdir(parents=True, exist_ok=True)
     queue: asyncio.Queue[int] = asyncio.Queue()
     for index in range(request_count):
@@ -356,13 +394,17 @@ async def run_benchmark_batch(
                 result = await backend.synthesize(
                     make_request(
                         text=(
-                            "Concurrent synthesis measures scheduler batching, decoder throughput, "
-                            "latency, and request isolation under sustained load."
+                            texts[index]
+                            if texts is not None
+                            else (
+                                "Concurrent synthesis measures scheduler batching, decoder throughput, "
+                                "latency, and request isolation under sustained load."
+                            )
                         ),
                         output=output,
                         reference=reference,
                         voice=None,
-                        language="en",
+                        language=language,
                         target_ms=request_target,
                         diffusion_steps=request_steps,
                         seed=seed + index,
@@ -391,6 +433,114 @@ async def run_benchmark_batch(
     await asyncio.gather(*workers)
     results.sort(key=lambda row: int(row["request_index"]))
     return results, time.perf_counter() - started
+
+
+async def run_document_benchmark(
+    recorder: SuiteRecorder,
+    backend: IndexTTS25Backend,
+    *,
+    run_dir: Path,
+    reference: str,
+    texts: list[str],
+    diffusion_steps: int,
+    silence_ms: int,
+    seed: int,
+) -> None:
+    """Measure one natural-duration parallel document wave end to end."""
+    document_dir = run_dir / "document-benchmark"
+    warmup_texts = texts[: min(16, len(texts))]
+    async with GPUSampler() as warmup_gpu:
+        warmup_results, warmup_wall_s = await run_benchmark_batch(
+            backend,
+            output_dir=document_dir / "warmup",
+            reference=reference,
+            concurrency=len(warmup_texts),
+            request_count=len(warmup_texts),
+            profile="fixed",
+            target_ms=0,
+            diffusion_steps=diffusion_steps,
+            seed=seed + 2_000_000,
+            texts=warmup_texts,
+            language="zh",
+        )
+
+    document_started = time.perf_counter()
+    async with GPUSampler() as measured_gpu:
+        results, synthesis_wall_s = await run_benchmark_batch(
+            backend,
+            output_dir=document_dir / "chunks",
+            reference=reference,
+            concurrency=len(texts),
+            request_count=len(texts),
+            profile="fixed",
+            target_ms=0,
+            diffusion_steps=diffusion_steps,
+            seed=seed + 3_000_000,
+            texts=texts,
+            language="zh",
+        )
+
+        failed = [result for result in results if result.get("status") != "pass"]
+        document_output = document_dir / "document.wav"
+        document_info: dict[str, Any] | None = None
+        if not failed:
+            ordered_chunks = [Path(str(result["output"])).read_bytes() for result in results]
+            document_output.write_bytes(join_wav(ordered_chunks, silence_ms=silence_ms))
+            document_info = wav_info(document_output)
+        end_to_end_wall_s = time.perf_counter() - document_started
+
+    metrics = summarize_concurrency_results(results, wall_s=end_to_end_wall_s)
+    if document_info is not None:
+        final_audio_s = float(document_info["duration_ms"]) / 1000.0
+        metrics.update(
+            total_audio_s=round(final_audio_s, 3),
+            audio_s_per_wall_s=round(final_audio_s / end_to_end_wall_s, 3),
+            aggregate_rtf=round(end_to_end_wall_s / final_audio_s, 4),
+        )
+    gpu_metrics = summarize_gpu_samples(measured_gpu.samples)
+    warmup_gpu_metrics = summarize_gpu_samples(warmup_gpu.samples)
+    detail = {
+        "language": "zh",
+        "natural_duration": True,
+        "chunk_count": len(texts),
+        "chunks": texts,
+        "diffusion_steps": diffusion_steps,
+        "silence_ms": silence_ms,
+        "warmup_request_count": len(warmup_texts),
+        "warmup_wall_s": round(warmup_wall_s, 3),
+        "warmup_results": warmup_results,
+        "warmup_gpu_samples": warmup_gpu.samples,
+        "warmup_gpu_summary": warmup_gpu_metrics,
+        "synthesis_wall_s": round(synthesis_wall_s, 3),
+        "end_to_end_wall_s": round(end_to_end_wall_s, 3),
+        "measured_results": results,
+        "measured_gpu_samples": measured_gpu.samples,
+        "measured_gpu_summary": gpu_metrics,
+        "summary": metrics,
+        "output": str(document_output) if not failed else None,
+    }
+    detail_path = document_dir / "benchmark.json"
+    detail_path.write_text(json.dumps(detail, indent=2, ensure_ascii=False), encoding="utf-8")
+    recorder.rows.append(
+        {
+            "label": "document-natural-parallel",
+            "group": "document_benchmark",
+            "status": "pass" if not failed else "fail",
+            "language": "zh",
+            "natural_duration": True,
+            "rtf_scope": "final-natural-document",
+            "chunk_count": len(texts),
+            "warmup_request_count": len(warmup_texts),
+            "warmup_wall_s": round(warmup_wall_s, 3),
+            "warmup_failures": sum(row.get("status") != "pass" for row in warmup_results),
+            "synthesis_wall_s": round(synthesis_wall_s, 3),
+            **metrics,
+            **gpu_metrics,
+            "silence_ms": silence_ms,
+            "output": str(document_output) if not failed else None,
+            "details": str(detail_path),
+        }
+    )
 
 
 async def run_concurrency_benchmark(
@@ -460,6 +610,8 @@ async def run_concurrency_benchmark(
                 "status": "pass" if metrics["failures"] == 0 else "fail",
                 "concurrency": concurrency,
                 "profile": profile,
+                "duration_controlled_output": True,
+                "rtf_scope": "emitted-duration-controlled-files",
                 "warmup_request_count": warmup_count,
                 "warmup_wall_s": round(warmup_wall_s, 3),
                 "warmup_failures": sum(row.get("status") != "pass" for row in warmup_results),
@@ -481,6 +633,9 @@ async def run_suite(
     benchmark_profile: str,
     benchmark_target_ms: int,
     benchmark_diffusion_steps: int,
+    document_text: str,
+    document_diffusion_steps: int,
+    document_silence_ms: int,
     stability_repeats: int,
     seed: int,
 ) -> tuple[str, str | None]:
@@ -501,9 +656,17 @@ async def run_suite(
         raise gr.Error("Benchmark target duration must be at least 250 ms.")
     if not 1 <= int(benchmark_diffusion_steps) <= 100:
         raise gr.Error("Benchmark diffusion steps must be between 1 and 100.")
+    document_chunks = parse_document_chunks(document_text)
+    if "Document RTF" in tests and not 2 <= len(document_chunks) <= 100:
+        raise gr.Error("Document RTF requires 2 to 100 non-empty lines; each line is one chunk.")
+    if not 1 <= int(document_diffusion_steps) <= 100:
+        raise gr.Error("Document diffusion steps must be between 1 and 100.")
+    if not 0 <= int(document_silence_ms) <= 10_000:
+        raise gr.Error("Document inter-chunk silence must be between 0 and 10000 ms.")
     run_dir = unique_run_dir("suite")
     recorder = SuiteRecorder(run_dir)
-    client, backend = await with_backend(max_parallel=max(levels))
+    document_parallelism = len(document_chunks) if "Document RTF" in tests else 1
+    client, backend = await with_backend(max_parallel=max(max(levels), document_parallelism))
     gpu_before = gpu_snapshot()
     suite_started = time.perf_counter()
 
@@ -626,6 +789,18 @@ async def run_suite(
                 seed=int(seed),
             )
 
+        if "Document RTF" in tests:
+            await run_document_benchmark(
+                recorder,
+                backend,
+                run_dir=run_dir,
+                reference=reference,
+                texts=document_chunks,
+                diffusion_steps=int(document_diffusion_steps),
+                silence_ms=int(document_silence_ms),
+                seed=int(seed),
+            )
+
         if "Compatibility streaming" in tests:
             stream_started = time.perf_counter()
             arrivals = []
@@ -704,7 +879,9 @@ async def run_suite(
                     iteration=index + 1,
                 )
                 memory_samples.append(gpu_snapshot().get("memory_used_mb"))
-            finite = [float(value) for value in memory_samples if isinstance(value, (int, float)) and math.isfinite(value)]
+            finite = [
+                float(value) for value in memory_samples if isinstance(value, int | float) and math.isfinite(value)
+            ]
             recorder.rows.append(
                 {
                     "label": "stability-memory-summary",
@@ -774,6 +951,13 @@ async def run_suite(
             "target_ms": int(benchmark_target_ms),
             "diffusion_steps": int(benchmark_diffusion_steps),
         },
+        "document_benchmark": {
+            "chunk_count": len(document_chunks),
+            "language": "zh",
+            "natural_duration": True,
+            "diffusion_steps": int(document_diffusion_steps),
+            "silence_ms": int(document_silence_ms),
+        },
         "elapsed_s": round(time.perf_counter() - suite_started, 3),
         "gpu_before": gpu_before,
         "gpu_after": gpu_snapshot(),
@@ -800,6 +984,20 @@ async def run_suite(
                 f"| {row.get('latency_p99_s')} | {row.get('memory_peak_mb')} "
                 f"| {row.get('gpu_utilization_avg_percent')}% |\n"
             )
+    document_rows = [row for row in recorder.rows if row.get("group") == "document_benchmark"]
+    document_table = ""
+    if document_rows:
+        document_table = (
+            "\n\n### Natural-duration document benchmark\n\n"
+            "| Chunks | Final audio s | End-to-end s | Aggregate RTF | Audio s/s | p95 | GPU avg |\n"
+            "|---:|---:|---:|---:|---:|---:|---:|\n"
+        )
+        for row in document_rows:
+            document_table += (
+                f"| {row['chunk_count']} | {row.get('total_audio_s')} | {row.get('wall_s')} "
+                f"| {row.get('aggregate_rtf')} | {row.get('audio_s_per_wall_s')} "
+                f"| {row.get('latency_p95_s')} | {row.get('gpu_utilization_avg_percent')}% |\n"
+            )
     markdown = (
         f"## Suite complete\n\n"
         f"- Passed records: **{passes}**\n"
@@ -810,7 +1008,10 @@ async def run_suite(
         "Download and listen to the generated clips for word omissions, unnatural pacing, "
         "speaker drift, emotion drift, and sentence-boundary discontinuity."
     )
-    return markdown + benchmark_table + "\n\n```json\n" + json.dumps(recorder.rows, indent=2) + "\n```", str(archive_path)
+    return (
+        markdown + benchmark_table + document_table + "\n\n```json\n" + json.dumps(recorder.rows, indent=2) + "\n```",
+        str(archive_path),
+    )
 
 
 async def voice_list() -> str:
@@ -889,7 +1090,9 @@ def build_ui() -> gr.Blocks:
                 emotion_text = gr.Textbox(label="Emotion description")
                 emotion_weight = gr.Slider(0, 1, value=0.6, label="Emotion weight")
                 emotion_vector = gr.Textbox(
-                    label="Emotion vector (8 values: happy, angry, sad, afraid, disgusted, melancholic, surprised, calm)"
+                    label=(
+                        "Emotion vector (8 values: happy, angry, sad, afraid, disgusted, melancholic, surprised, calm)"
+                    )
                 )
                 random_emotion = gr.Checkbox(label="Random emotion", value=False)
                 sampling_json = gr.Code(
@@ -939,7 +1142,9 @@ def build_ui() -> gr.Blocks:
             with gr.Accordion("Concurrency benchmark", open=True):
                 gr.Markdown(
                     "Each level runs a warm-up wave, then the same number of measured requests. "
-                    "Use `fixed` for maximum batching throughput and `mixed` for realistic batch fragmentation."
+                    "Use `fixed` for maximum batching throughput and `mixed` for realistic batch fragmentation. "
+                    "These workloads force output durations, so their aggregate RTF describes the emitted files; "
+                    "use Document RTF for a production long-text comparison."
                 )
                 with gr.Row():
                     concurrency_levels = gr.Textbox(
@@ -969,6 +1174,29 @@ def build_ui() -> gr.Blocks:
                         precision=0,
                         label="Fixed workload diffusion steps",
                     )
+            with gr.Accordion("Natural-duration document RTF", open=True):
+                gr.Markdown(
+                    "Each non-empty line is one chunk. The default contains exactly 32 Chinese chunks. "
+                    "After a separate 16-request warm-up, all chunks launch in one parallel wave and are "
+                    "concatenated in line order. No target duration or time stretching is used; end-to-end RTF "
+                    "includes final WAV assembly."
+                )
+                document_text = gr.Textbox(
+                    value=DEFAULT_DOCUMENT_CHUNKS,
+                    lines=12,
+                    label="Document chunks (one natural-duration chunk per line)",
+                )
+                with gr.Row():
+                    document_diffusion_steps = gr.Number(
+                        value=15,
+                        precision=0,
+                        label="Document diffusion steps",
+                    )
+                    document_silence_ms = gr.Number(
+                        value=0,
+                        precision=0,
+                        label="Inter-chunk silence (ms)",
+                    )
             suite_button = gr.Button("Run selected suite", variant="primary")
             suite_report = gr.Markdown()
             suite_archive = gr.File(label="Download complete result archive")
@@ -984,6 +1212,9 @@ def build_ui() -> gr.Blocks:
                     benchmark_profile,
                     benchmark_target_ms,
                     benchmark_diffusion_steps,
+                    document_text,
+                    document_diffusion_steps,
+                    document_silence_ms,
                     stability_repeats,
                     suite_seed,
                 ],
