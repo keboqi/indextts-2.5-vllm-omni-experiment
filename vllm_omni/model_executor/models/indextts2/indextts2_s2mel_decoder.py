@@ -769,15 +769,28 @@ class IndexTTS2S2MelDecoder(nn.Module):
                 hop_length=hop_length,
             )
             if not INDEXTTS25_MIN_DURATION_FACTOR <= native_factor <= INDEXTTS25_MAX_DURATION_FACTOR:
+                natural_frames = max(
+                    1,
+                    int(length * semantic_time_scale * mel_code_to_frame_ratio),
+                )
+                clamped_factor = min(
+                    INDEXTTS25_MAX_DURATION_FACTOR,
+                    max(INDEXTTS25_MIN_DURATION_FACTOR, native_factor),
+                )
+                safe_frames = max(1, round(natural_frames * clamped_factor))
                 logger.warning(
-                    "IndexTTS 2.5 exact-duration request is outside the trained native range: "
-                    "codes=%d semantic_time_scale=%d natural_frames=%d target_frames=%d factor=%.4f",
+                    "IndexTTS 2.5 clamped an unsafe exact-duration request to preserve speech: "
+                    "codes=%d semantic_time_scale=%d natural_frames=%d requested_frames=%d "
+                    "requested_factor=%.4f safe_frames=%d safe_factor=%.4f",
                     length,
                     semantic_time_scale,
-                    int(length * semantic_time_scale * mel_code_to_frame_ratio),
+                    natural_frames,
                     requested_frames,
                     native_factor,
+                    safe_frames,
+                    clamped_factor,
                 )
+                requested_frames = safe_frames
             results.append(requested_frames)
         return results
 

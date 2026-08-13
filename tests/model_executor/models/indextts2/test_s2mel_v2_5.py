@@ -303,11 +303,11 @@ def test_s2mel_exact_duration_overrides_duration_factor():
         [100, 80],
         semantic_time_scale=2,
         mel_code_to_frame_ratio=1.72,
-        duration_factors=[0.5, 2.0],
-        target_duration_ms=[1000.0, None],
+        duration_factors=[2.0, 2.0],
+        target_duration_ms=[3000.0, None],
         sample_rate=22050,
         hop_length=256,
-    ) == [86, 550]
+    ) == [258, 550]
 
 
 def test_v25_native_duration_plan_uses_25hz_semantic_clock():
@@ -338,6 +338,33 @@ def test_v2_native_duration_plan_keeps_50hz_scale_for_comparison():
 
     assert target_frames == 172
     assert duration_factor == pytest.approx(1.0)
+
+
+def test_v25_exact_duration_clamps_unsafe_compression_to_trained_range():
+    # Natural length is 100 * 2 * 1.72 = 344 frames. A 500 ms request is
+    # only 43 frames (factor 0.125), so native control must use the trained
+    # minimum 0.5 factor instead of discarding semantic content.
+    assert IndexTTS2S2MelDecoder._target_lengths(
+        [100],
+        semantic_time_scale=2,
+        mel_code_to_frame_ratio=1.72,
+        duration_factors=[1.0],
+        target_duration_ms=[500.0],
+        sample_rate=22050,
+        hop_length=256,
+    ) == [172]
+
+
+def test_v25_exact_duration_keeps_feasible_target_exact():
+    assert IndexTTS2S2MelDecoder._target_lengths(
+        [100],
+        semantic_time_scale=2,
+        mel_code_to_frame_ratio=1.72,
+        duration_factors=[1.0],
+        target_duration_ms=[3000.0],
+        sample_rate=22050,
+        hop_length=256,
+    ) == [258]
 
 
 def test_s2mel_exact_duration_validation():
