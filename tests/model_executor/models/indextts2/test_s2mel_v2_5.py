@@ -310,6 +310,36 @@ def test_s2mel_exact_duration_overrides_duration_factor():
     ) == [86, 550]
 
 
+def test_v25_native_duration_plan_uses_25hz_semantic_clock():
+    target_frames, duration_factor = IndexTTS2S2MelDecoder._native_duration_plan(
+        100,
+        semantic_time_scale=2,
+        mel_code_to_frame_ratio=1.72,
+        target_duration_ms=4000,
+        sample_rate=22050,
+        hop_length=256,
+    )
+
+    # 100 raw 25 Hz codes decode to 200 effective 50 Hz semantic steps,
+    # whose natural S2Mel length is 200 * 1.72 = 344 frames.
+    assert target_frames == 345
+    assert duration_factor == pytest.approx(345 / 344)
+
+
+def test_v2_native_duration_plan_keeps_50hz_scale_for_comparison():
+    target_frames, duration_factor = IndexTTS2S2MelDecoder._native_duration_plan(
+        100,
+        semantic_time_scale=1,
+        mel_code_to_frame_ratio=1.72,
+        target_duration_ms=2000,
+        sample_rate=22050,
+        hop_length=256,
+    )
+
+    assert target_frames == 172
+    assert duration_factor == pytest.approx(1.0)
+
+
 def test_s2mel_exact_duration_validation():
     assert IndexTTS2S2MelDecoder._target_duration_ms(
         [{"target_duration_ms": 1000}, {}],

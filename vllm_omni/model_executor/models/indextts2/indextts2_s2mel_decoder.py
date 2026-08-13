@@ -705,6 +705,34 @@ class IndexTTS2S2MelDecoder(nn.Module):
         return values
 
     @staticmethod
+    def _native_duration_plan(
+        code_len: int,
+        *,
+        semantic_time_scale: int,
+        mel_code_to_frame_ratio: float,
+        target_duration_ms: float,
+        sample_rate: int,
+        hop_length: int,
+    ) -> tuple[int, float]:
+        """Return exact mel frames and factor against the natural code clock.
+
+        IndexTTS 2.0 emits semantic codes at 50 Hz and therefore uses roughly
+        1.72 mel frames per code. IndexTTS 2.5 emits enhanced codes at 25 Hz;
+        decoding restores a 2x temporal scale, so its natural baseline is
+        ``code_len * 2 * 1.72``. Absolute target milliseconds still map to
+        mel frames using the S2Mel hop, independent of semantic-code rate.
+        """
+        natural_frames = max(
+            1,
+            int(code_len * semantic_time_scale * mel_code_to_frame_ratio),
+        )
+        requested_frames = max(
+            1,
+            round(target_duration_ms * sample_rate / (1000.0 * hop_length)),
+        )
+        return requested_frames, requested_frames / natural_frames
+
+    @staticmethod
     def _target_lengths(
         code_lens: list[int],
         *,
@@ -726,12 +754,32 @@ class IndexTTS2S2MelDecoder(nn.Module):
             )
         if sample_rate <= 0 or hop_length <= 0:
             raise ValueError("IndexTTS sample_rate and hop_length must be positive")
-        return [
-            max(1, round(target_ms * sample_rate / (1000.0 * hop_length)))
-            if target_ms is not None
-            else int(length * semantic_time_scale * mel_code_to_frame_ratio * factor)
-            for length, factor, target_ms in zip(code_lens, duration_factors, targets)
-        ]
+        results: list[int] = []
+        for length, factor, target_ms in zip(code_lens, duration_factors, targets):
+            if target_ms is None:
+                results.append(int(length * semantic_time_scale * mel_code_to_frame_ratio * factor))
+                continue
+
+            requested_frames, native_factor = IndexTTS2S2MelDecoder._native_duration_plan(
+                length,
+                semantic_time_scale=semantic_time_scale,
+                mel_code_to_frame_ratio=mel_code_to_frame_ratio,
+                target_duration_ms=target_ms,
+                sample_rate=sample_rate,
+                hop_length=hop_length,
+            )
+            if not INDEXTTS25_MIN_DURATION_FACTOR <= native_factor <= INDEXTTS25_MAX_DURATION_FACTOR:
+                logger.warning(
+                    "IndexTTS 2.5 exact-duration request is outside the trained native range: "
+                    "codes=%d semantic_time_scale=%d natural_frames=%d target_frames=%d factor=%.4f",
+                    length,
+                    semantic_time_scale,
+                    int(length * semantic_time_scale * mel_code_to_frame_ratio),
+                    requested_frames,
+                    native_factor,
+                )
+            results.append(requested_frames)
+        return results
 
     def _run_cfm_groups(
         self,
