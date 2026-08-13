@@ -120,5 +120,6 @@ exec vllm serve "${MODEL_DIR}" \
   --port "${API_PORT}" \
   --served-model-name "${SERVED_MODEL_NAME}" \
   --trust-remote-code \
+  --enable-sleep-mode \
   --log-stats \
   --deploy-config "${DEPLOY_CONFIG}"
